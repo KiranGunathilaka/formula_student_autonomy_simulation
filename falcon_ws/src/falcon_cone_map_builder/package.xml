@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>falcon_cone_map_builder</name>
+  <version>0.1.0</version>
+  <description>Global cone map builder</description>
+  <maintainer email="falcone@gmail.com">FalconE Racing</maintainer>
+  <author email="falcone@gmail.com">FalconE Racing</author>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>falcon_msgs</depend>
+</package>

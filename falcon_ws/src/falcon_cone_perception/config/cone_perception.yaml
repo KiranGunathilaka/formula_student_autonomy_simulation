@@ -1,0 +1,6 @@
+cone_perception_node:
+  ros__parameters:
+    pointcloud_topic: "/points"
+    output_topic: "/perception/cones_raw"
+    output_frame: "base_link"
+    publish_rate_hz: 10.0

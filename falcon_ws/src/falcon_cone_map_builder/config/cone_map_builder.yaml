@@ -1,0 +1,6 @@
+cone_map_builder_node:
+  ros__parameters:
+    input_topic: "/perception/cones_fused"
+    output_topic: "/map/cones_map"
+    output_frame: "map"
+    publish_rate_hz: 2.0

@@ -1,0 +1,1 @@
+this supposed to be used for having all the gazebo files but apparently eufs does this better. Can evaluate whether this is needed after Kavija pushed the eufss migrated package

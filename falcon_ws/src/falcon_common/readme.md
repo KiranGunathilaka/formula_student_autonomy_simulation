@@ -1,0 +1,1 @@
+all params, configs, jsons should be  here. I think should be mounted not copied to the container so rebuilding not needed
