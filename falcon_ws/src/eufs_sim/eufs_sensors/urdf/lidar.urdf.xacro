@@ -1,0 +1,99 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="rplidar_a1"
+               params="*origin
+                       parent
+                       name
+                       topic
+                       hz
+                       samples
+                       active">
+
+    <!-- Spawn only if active -->
+    <xacro:unless value="${active}">
+
+      <!-- Link -->
+      <link name="${name}_link">
+
+        <visual>
+          <geometry>
+            <cylinder radius="0.05" length="0.05"/>
+          </geometry>
+          <material name="black">
+            <color rgba="0.1 0.1 0.1 1.0"/>
+          </material>
+        </visual>
+
+        <collision>
+          <geometry>
+            <cylinder radius="0.05" length="0.05"/>
+          </geometry>
+        </collision>
+
+        <inertial>
+          <mass value="0.1"/>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <inertia ixx="0.001" iyy="0.001" izz="0.001"
+                  ixy="0.0" ixz="0.0" iyz="0.0"/>
+        </inertial>
+
+      </link>
+
+      <!-- Joint -->
+      <joint name="${name}_joint" type="fixed">
+        <parent link="${parent}"/>
+        <child link="${name}_link"/>
+        <xacro:insert_block name="origin"/>
+      </joint>
+
+      <!-- Gazebo Plugin -->
+      <gazebo reference="${name}_link">
+        <sensor type="ray" name="${name}_sensor">
+
+          <!-- RPLIDAR A1 specs -->
+          <update_rate>5.5</update_rate>      <!-- 5.5 Hz scan rate -->
+          <always_on>true</always_on>
+          <visualize>true</visualize>
+
+          <ray>
+            <scan>
+              <horizontal>
+                <samples>360</samples>         <!-- 360 samples → ~1° resolution -->
+                <resolution>1</resolution>
+                <min_angle>0</min_angle>       <!-- Full 360° scan -->
+                <max_angle>6.28318</max_angle>
+              </horizontal>
+            </scan>
+
+            <range>
+              <min>0.15</min>                <!-- Minimum distance -->
+              <max>6.0</max>                 <!-- Maximum distance -->
+              <resolution>0.01</resolution>
+            </range>
+
+            <noise>
+              <type>gaussian</type>
+              <mean>0.0</mean>
+              <stddev>0.01</stddev>
+            </noise>
+          </ray>
+
+          <plugin name="${name}_laser_plugin"
+                  filename="libgazebo_ros_ray_sensor.so">
+
+            <ros>
+              <remapping>~/out:=${topic}</remapping>
+            </ros>
+            <frame_name>${name}_link</frame_name>
+
+          </plugin>
+
+        </sensor>
+      </gazebo>
+
+    </xacro:unless>
+
+  </xacro:macro>
+
+</robot>
