@@ -15,7 +15,7 @@
   <depend>falcon_cone_perception</depend>
   <depend>falcon_cone_fusion</depend>
   <depend>falcon_cone_map_builder</depend>
-  <depend>falcon_sim</depend>
+  <depend>eufs_launcher</depend>
 
   <export>
     <build_type>ament_python</build_type>

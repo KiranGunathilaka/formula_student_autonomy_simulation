@@ -1,5 +1,4 @@
-will be used to bringup the entire autonomy stack
+Launch files for the Falcon autonomy stack.
 
-should integrate this with eufs sim or our custom falcon_sim package for simulation
-
-
+- `bringup.launch.py` – full stack with real sensors (cone perception, fusion, map builder)
+- `simulation.launch.py` – EUFS Gazebo sim (small track, ads-dv, velocity control, simulated cones on `/cones`)
