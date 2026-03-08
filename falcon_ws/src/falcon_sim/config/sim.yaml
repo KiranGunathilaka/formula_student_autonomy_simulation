@@ -1,8 +1,0 @@
-falcon_sim_node:
-  ros__parameters:
-    enable_fused: true
-    enable_map: true
-    fused_topic: "/perception/cones_fused"
-    map_topic: "/map/cones_map"
-    fused_rate_hz: 10.0
-    map_rate_hz: 1.0
