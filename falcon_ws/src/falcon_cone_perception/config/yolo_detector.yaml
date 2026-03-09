@@ -1,0 +1,27 @@
+cone_detection:
+  # YOLO detector configuration
+  model_path: "models/best.pt"  # Path to YOLOv8 model weights
+  confidence_threshold: 0.5
+  iou_threshold: 0.45
+  
+  # Input/Output topics
+  input_topic: "/camera/image_raw"
+  output_topic: "/detected_cones"
+  
+  # Detection parameters
+  use_gpu: true
+  image_width: 640
+  image_height: 480
+  
+  # Cone detection classes
+  # Yellow cone class: 0, Blue cone class: 1, Orange cone class: 2
+  classes:
+    - name: "yellow"
+      id: 0
+      color: [0, 255, 255]  # BGR
+    - name: "blue"
+      id: 1
+      color: [255, 0, 0]    # BGR
+    - name: "orange"
+      id: 2
+      color: [0, 165, 255]  # BGR
