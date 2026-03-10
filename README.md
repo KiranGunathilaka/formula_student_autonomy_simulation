@@ -71,7 +71,7 @@ Instead of the EUFS dial-based steering GUI, use game-style keyboard teleop with
 ros2 launch falcon_teleop teleop.launch.py
 ```
 
-Controls: **W** forward, **S** brake, **A/D** steer, **R/F** speed +/-, **Space** stop. The teleop automatically enables Manual Drive; no RQT click needed. Requires `launch_group:=default` for camera view. See `falcon_teleop/README.md`.
+Controls: **W** forward, **S** brake, **A/D** steer, **R/F** speed +/-, **Space** stop. Teleop automatically enables Manual Drive (retries until sim is ready). See `falcon_teleop/README.md`.
 
 ## Simulated Perception
 
@@ -179,3 +179,22 @@ For a known pose without localization, subscribe to `/ground_truth/state`. The T
 - `falcon_localization` – Localization 
 - `falcon_planning` – Planning
 - `falcon_vehicle_comm` – Vehicle interface 
+
+## Teleop camera launch
+
+The teleop window shows a front camera view from a dedicated **teleop camera** Not the ZED but it is a separate minimal Gazebo camera at the same mount position, always on in any launch group.
+
+**Launch order:**
+
+1. Start simulation:
+   ```bash
+   ros2 launch falcon_bringup simulation.launch.py
+   ```
+
+2. In a separate terminal, launch teleop (with camera view):
+   ```bash
+   ros2 launch falcon_teleop teleop.launch.py
+   ```
+
+**Topics:** `/teleop_camera/image_raw`, `/teleop_camera/camera_info`  
+**Dependencies:** `cv_bridge`, `opencv-python`, `Pillow` (required for teleop camera display)
