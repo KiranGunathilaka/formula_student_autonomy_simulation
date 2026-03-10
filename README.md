@@ -166,19 +166,74 @@ EUFS publishes vehicle pose, so you can run planning/control without a localizat
 
 For a known pose without localization, subscribe to `/ground_truth/state`. The TF and odom are deliberately noisy for more realistic behaviour.
 
+## Autonomous Driving (Simulation)
+
+Run the full planning and control stack against the EUFS simulator using ground-truth cone positions — no LiDAR or camera detection required:
+
+```bash
+# In a fresh terminal (never sourced this workspace):
+cd ~/Projects/Falcon_autonomy/falcon_ws
+source /opt/ros/humble/setup.bash
+bash patch_install.sh        # fix C++ package paths — run once after every colcon build
+source install/setup.bash
+ros2 launch falcon_bringup autonomy.launch.py
+```
+
+### What happens
+
+| Step | Node | Input → Output |
+|------|------|----------------|
+| 1 | EUFS Gazebo plugin | Publishes cone positions → `/cones` |
+| 2 | `cone_bridge_node` | `/cones` → `/perception/cones_raw` |
+| 3 | `cone_fusion_node` | `/perception/cones_raw` → `/perception/cones_fused` |
+| 4 | `path_planner_node` | `/perception/cones_fused` → `/planning/path` (10 Hz) |
+| 5 | `pure_pursuit_node` | `/planning/path` → `/cmd` Ackermann commands (20 Hz) |
+
+All planning runs in the vehicle body frame (`base_footprint`). The car is always at the origin facing +x, so no odometry or TF tree is needed.
+
+### RViz visualisation
+
+RViz opens automatically. Set **Fixed Frame = `base_footprint`** and add:
+
+| Display type | Topic | What you see |
+|---|---|---|
+| MarkerArray | `/planning/cone_markers` | Blue/yellow cones + green centerline |
+| Marker | `/planning/lookahead_marker` | Orange sphere — current steering target |
+| Path | `/planning/path` | Waypoints as arrows |
+
+### Tuning
+
+```bash
+ros2 param set /pure_pursuit_node lookahead_distance 3.5   # smoother, less oscillation
+ros2 param set /pure_pursuit_node target_speed 1.5         # slower if car spins out
+```
+
+See [`falcon_planning/README.md`](falcon_ws/src/falcon_planning/README.md) for the full parameter reference and tuning guide.
+
+### Build quirk — patch_install.sh
+
+After every `colcon build`, run `bash patch_install.sh` from the `falcon_ws/` directory.
+
+colcon overwrites `package.dsv` for C++ packages and drops the `local_setup.*` entries needed to register them in `AMENT_PREFIX_PATH`. The patch script re-appends those entries. Without it, `PackageNotFoundError` errors appear at launch time.
+
+---
+
 ## Packages
 
-- `falcon_msgs` – Cone and ConeArray message definitions
-- `falcon_bringup` – Launch files
-- `falcon_common` – Shared C++ utilities
-- `falcon_teleop` – Keyboard teleop with embedded front-view
-- `falcon_drivers` – ZED/LiDAR config placeholders
-- `falcon_cone_perception` – Raw cone detection from pointcloud
-- `falcon_cone_fusion` – Local cone fusion
-- `falcon_cone_map_builder` – Global cone map
-- `falcon_localization` – Localization 
-- `falcon_planning` – Planning
-- `falcon_vehicle_comm` – Vehicle interface 
+| Package | Type | Description |
+|---------|------|-------------|
+| `falcon_msgs` | C++ | Cone and ConeArray message definitions |
+| `falcon_bringup` | Python | Launch files |
+| `falcon_common` | C++ | Shared utilities |
+| `falcon_teleop` | Python | Keyboard teleop with embedded front-view |
+| `falcon_drivers` | — | ZED/LiDAR config placeholders |
+| `falcon_cone_perception` | C++ | Raw cone detection from pointcloud |
+| `falcon_cone_fusion` | C++ | Local cone fusion |
+| `falcon_cone_map_builder` | C++ | Global cone map |
+| `falcon_localization` | C++ | Localization |
+| `falcon_cone_bridge` | Python | Converts EUFS sim cones → Falcon ConeArray (sim only) |
+| `falcon_planning` | Python | Centerline path planner + Pure Pursuit controller |
+| `falcon_vehicle_comm` | C++ | Vehicle interface |
 
 ## Teleop camera launch
 

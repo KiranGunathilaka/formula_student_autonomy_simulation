@@ -1,0 +1,13 @@
+pure_pursuit_node:
+  ros__parameters:
+    path_topic: "/planning/path"
+    cmd_topic: "/cmd"
+    lookahead_marker_topic: "/planning/lookahead_marker"
+    # --- tuning parameters ---
+    lookahead_distance: 2.5      # metres: increase for smoother, decrease for tighter turns
+    wheelbase: 1.53              # metres: ADS-DV formula student car
+    target_speed: 2.0            # m/s: start low, increase once tracking looks good
+    max_steering_angle: 0.44     # radians (~25 degrees)
+    control_rate_hz: 20.0
+    path_timeout_sec: 0.5        # stop if no fresh path within this window
+    goal_tolerance_m: 1.0        # stop when within this distance of last waypoint

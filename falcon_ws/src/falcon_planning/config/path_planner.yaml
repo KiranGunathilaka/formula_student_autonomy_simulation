@@ -1,0 +1,7 @@
+path_planner_node:
+  ros__parameters:
+    cones_topic: "/perception/cones_fused"
+    path_topic: "/planning/path"
+    markers_topic: "/planning/cone_markers"
+    min_cones_per_side: 1
+    plan_rate_hz: 10.0
