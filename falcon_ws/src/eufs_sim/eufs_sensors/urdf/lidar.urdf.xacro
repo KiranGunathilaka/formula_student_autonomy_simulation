@@ -51,44 +51,39 @@
       <gazebo reference="${name}_link">
         <sensor type="ray" name="${name}_sensor">
 
-          <!-- RPLIDAR A1 specs -->
-          <update_rate>5.5</update_rate>      <!-- 5.5 Hz scan rate -->
-          <always_on>true</always_on>
+          <pose>0 0 0 0 0 0</pose>
           <visualize>true</visualize>
-
+          <update_rate>5.5</update_rate> <!-- 5.5 Hz Typical -->
           <ray>
             <scan>
               <horizontal>
-                <samples>360</samples>         <!-- 360 samples → ~1° resolution -->
+                <samples>1200</samples> <!-- 8000hz/5.5hz / (~360pts) -->
                 <resolution>1</resolution>
-                <min_angle>0</min_angle>       <!-- Full 360° scan -->
-                <max_angle>6.28318</max_angle>
+                <min_angle>-3.14159265</min_angle>
+                <max_angle>3.14159265</max_angle>
               </horizontal>
             </scan>
-
             <range>
-              <min>0.15</min>                <!-- Minimum distance -->
-              <max>6.0</max>                 <!-- Maximum distance -->
+              <min>0.15</min> <!-- 0.15m -->
+              <max>8.0</max> <!-- 12m -->
               <resolution>0.01</resolution>
             </range>
-
             <noise>
               <type>gaussian</type>
               <mean>0.0</mean>
-              <stddev>0.01</stddev>
+              <stddev>0.01</stddev> <!-- Typical noise level -->
             </noise>
           </ray>
-
           <plugin name="${name}_laser_plugin"
                   filename="libgazebo_ros_ray_sensor.so">
-
             <ros>
-              <remapping>~/out:=${topic}</remapping>
+              <remapping>~/out:=/gazebo_scan</remapping>
             </ros>
+            <output_type>sensor_msgs/LaserScan</output_type>
             <frame_name>${name}_link</frame_name>
-
           </plugin>
         </sensor>
+
       </gazebo>
 
     </xacro:unless>
