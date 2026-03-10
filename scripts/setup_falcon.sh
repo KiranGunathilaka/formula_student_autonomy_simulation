@@ -27,6 +27,11 @@ fi
 # Setup: export EUFS_MASTER and source install
 _do_setup() {
   if [ -f "${WS_DIR}/install/setup.bash" ]; then
+    # EUFS expects $EUFS_MASTER/install/eufs_plugins for GAZEBO_PLUGIN_PATH, but
+    # with colcon --merge-install plugins are in install/lib. Symlink fixes gzserver.
+    if [ ! -e "${WS_DIR}/install/eufs_plugins" ] && [ -d "${WS_DIR}/install/lib" ]; then
+      ln -sf lib "${WS_DIR}/install/eufs_plugins"
+    fi
     source "${WS_DIR}/install/setup.bash"
     return 0
   else

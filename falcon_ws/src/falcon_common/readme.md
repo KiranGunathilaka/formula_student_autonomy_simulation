@@ -1,1 +1,1 @@
-all params, configs, jsons should be  here. I think should be mounted not copied to the container so rebuilding not needed
+Shared configs and utilities. Params/configs should be mounted, not copied, for container workflows.

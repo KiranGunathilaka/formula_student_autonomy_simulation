@@ -6,16 +6,21 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 def generate_launch_description():
+    # EUFS expects EUFS_MASTER for GAZEBO_PLUGIN_PATH; derive from this package's share path
+    _share = get_package_share_directory('falcon_bringup')
+    _eufs_master = os.path.dirname(os.path.dirname(os.path.dirname(_share)))
+
     eufs_launcher_share = get_package_share_directory('eufs_launcher')
     sim_launch_path = os.path.join(eufs_launcher_share, 'simulation.launch.py')
 
     return LaunchDescription([
+        SetEnvironmentVariable(name='EUFS_MASTER', value=_eufs_master),
         DeclareLaunchArgument(
             'gazebo_gui',
             default_value='true',
@@ -25,6 +30,11 @@ def generate_launch_description():
             'rviz',
             default_value='true',
             description='Launch RViz',
+        ),
+        DeclareLaunchArgument(
+            'launch_group',
+            default_value='no_perception',
+            description="'no_perception' (default): /cones, lidar/camera off. 'default': real lidar (/gazebo_scan) and cameras.",
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sim_launch_path),
@@ -38,7 +48,7 @@ def generate_launch_description():
                 'rviz': LaunchConfiguration('rviz'),
                 'publish_gt_tf': 'true',
                 'pub_ground_truth': 'true',
-                'launch_group': 'no_perception',
+                'launch_group': LaunchConfiguration('launch_group'),
             }.items(),
         ),
     ])
