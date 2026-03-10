@@ -11,4 +11,9 @@ install(DIRECTORY models
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(PROGRAMS
+  scripts/cone_depth_localizer.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()
