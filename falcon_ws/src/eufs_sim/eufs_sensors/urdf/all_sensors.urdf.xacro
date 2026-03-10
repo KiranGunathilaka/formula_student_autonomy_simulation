@@ -18,4 +18,7 @@
   <!-- ZED Stereo camera -->
   <xacro:include filename="$(find eufs_sensors)/urdf/zed.urdf.xacro"/>
 
+  <!-- Teleop camera - always on, no visual, for falcon_teleop view in any launch_group -->
+  <xacro:include filename="$(find eufs_sensors)/urdf/teleop_camera.urdf.xacro"/>
+
 </robot>

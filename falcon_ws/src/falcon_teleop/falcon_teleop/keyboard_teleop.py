@@ -2,13 +2,16 @@
 """
 Keyboard teleop for EUFS simulation.
 Game-style controls: W/S forward/brake, A/D steer, R/F speed +/-, Space stop.
-Embedded front-view from ZED camera when available (launch_group:=default).
+Embedded front-view from teleop camera when available.
 Uses tkinter (no PyQt) to avoid Qt/cv2 plugin conflicts.
 """
 import sys
+import threading
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
 from ackermann_msgs.msg import AckermannDriveStamped
 from sensor_msgs.msg import Image
 from eufs_msgs.srv import SetCanState
@@ -23,8 +26,12 @@ except ImportError:
 
 try:
     from cv_bridge import CvBridge
+    import cv2
+    HAS_CV2 = True
 except ImportError:
     CvBridge = None
+    cv2 = None
+    HAS_CV2 = False
 
 try:
     import PIL.Image
@@ -33,7 +40,15 @@ try:
 except ImportError:
     HAS_PIL = False
 
-HAS_IMAGE = CvBridge is not None and HAS_PIL
+HAS_IMAGE = CvBridge is not None and HAS_PIL and HAS_CV2
+
+# Image topics: teleop_camera is always-on (any launch_group); ZED only with launch_group:=default
+IMAGE_TOPIC_FALLBACKS = [
+    '/teleop_camera/image_raw',       # always-on teleop camera
+    '/eufs/teleop_camera/image_raw',  # if spawned with namespace
+    '/zed/left/image_rect_color',
+    '/zed/zed_left/image_raw',
+]
 
 
 class TeleopWindow:
@@ -52,7 +67,7 @@ class TeleopWindow:
         bfont = tkfont.Font(size=11, weight='bold')
         lbl = tk.Label(
             self.root,
-            text='W: Forward  S: Brake  A/D: Steer  R: Speed+  F: Speed-  Space: Stop',
+            text='W: Fwd  S: Brake  A/D: Steer  R/F: Speed  Space: Stop',
             font=bfont,
             fg='#eee',
             bg='#1e1e1e',
@@ -65,31 +80,29 @@ class TeleopWindow:
         )
         st_lbl.pack(pady=2)
 
-        # Image / placeholder - camera is optional; driving works without it
+        # Image area - camera feed is required for teleop
         self.img_frame = tk.Frame(self.root, bg='#2a2a2a', width=640, height=360)
         self.img_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        self.img_label = tk.Label(
+        self.img_frame.pack_propagate(False)  # keep frame size for proper layout
+        self.img_canvas = tk.Canvas(
             self.img_frame,
-            text='Camera view (optional)\nClick this window to enable keyboard controls',
-            fg='#888',
             bg='#2a2a2a',
-            font=('', 11),
+            highlightthickness=0,
+            width=640,
+            height=360,
         )
-        self.img_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        self.img_canvas.pack(fill=tk.BOTH, expand=True)
+        self.img_canvas.create_text(
+            320, 180,
+            text='Waiting for camera...\nClick this window to enable keyboard controls',
+            fill='#888',
+            font=('', 11),
+            tags='placeholder',
+        )
 
-        # bind_all so keys work even when child widgets have focus; include uppercase for Caps Lock
-        for k, handler in [
-            ('w', self._key_w), ('W', self._key_w), ('s', self._key_s), ('S', self._key_s),
-            ('a', self._key_a), ('A', self._key_a), ('d', self._key_d), ('D', self._key_d),
-            ('r', self._key_r), ('R', self._key_r), ('f', self._key_f), ('F', self._key_f),
-        ]:
-            self.root.bind_all(f'<KeyPress-{k}>', handler)
-        for k, handler in [
-            ('w', self._key_w_up), ('W', self._key_w_up), ('s', self._key_s_up), ('S', self._key_s_up),
-            ('a', self._key_a_up), ('A', self._key_a_up), ('d', self._key_d_up), ('D', self._key_d_up),
-        ]:
-            self.root.bind_all(f'<KeyRelease-{k}>', handler)
-        self.root.bind_all('<KeyPress-space>', self._key_space)
+        # Single <Key> handler - more reliable across focus/display managers
+        self.root.bind_all('<KeyPress>', self._on_key_press)
+        self.root.bind_all('<KeyRelease>', self._on_key_release)
 
         # Ensure window can receive keys: focus on show and on any click
         def _take_focus(e=None):
@@ -97,57 +110,87 @@ class TeleopWindow:
         self.root.after(100, _take_focus)
         self.root.bind('<FocusIn>', _take_focus)
         self.img_frame.bind('<Button-1>', _take_focus)
-        self.img_label.bind('<Button-1>', _take_focus)
+        self.img_canvas.bind('<Button-1>', _take_focus)
+        self._canvas_image_id = None
 
-    def _key_w(self, e):
-        self.node.set_forward(True)
-    def _key_s(self, e):
-        self.node.set_brake(True)
-    def _key_a(self, e):
-        self.node.set_steer_left(True)
-    def _key_d(self, e):
-        self.node.set_steer_right(True)
-    def _key_r(self, e):
-        self.node.speed_up()
-    def _key_f(self, e):
-        self.node.speed_down()
-    def _key_space(self, e):
-        self.node.stop()
-    def _key_w_up(self, e):
-        self.node.set_forward(False)
-    def _key_s_up(self, e):
-        self.node.set_brake(False)
-    def _key_a_up(self, e):
-        self.node.set_steer_left(False)
-    def _key_d_up(self, e):
-        self.node.set_steer_right(False)
+    def _on_key_press(self, e):
+        k = (e.keysym or '').lower()
+        if k == 'w':
+            self.node.set_forward(True)
+        elif k == 's':
+            self.node.set_brake(True)
+        elif k == 'a':
+            self.node.set_steer_left(True)
+        elif k == 'd':
+            self.node.set_steer_right(True)
+        elif k == 'r':
+            self.node.speed_up()
+        elif k == 'f':
+            self.node.speed_down()
+        elif e.keysym == 'space':
+            self.node.stop()
+
+    def _on_key_release(self, e):
+        k = (e.keysym or '').lower()
+        if k == 'w':
+            self.node.set_forward(False)
+        elif k == 's':
+            self.node.set_brake(False)
+        elif k == 'a':
+            self.node.set_steer_left(False)
+        elif k == 'd':
+            self.node.set_steer_right(False)
 
     def image_callback(self, msg):
         if not HAS_IMAGE or self.bridge is None:
             return
         try:
-            cv_img = self.bridge.imgmsg_to_cv2(msg, 'rgb8')
-            self.last_image = cv_img
-            self._update_image()
+            cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+            if cv_img is None or cv_img.size == 0:
+                return
+            # Ensure uint8 RGB
+            if len(cv_img.shape) == 2:
+                cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
+            elif cv_img.shape[2] == 3:
+                enc = (msg.encoding or 'bgr8').strip().lower()
+                if enc in ('bgr8', '8uc3', 'bgra8'):
+                    cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+                elif enc != 'rgb8':
+                    cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+            self.last_image = np.ascontiguousarray(cv_img)
+            self.root.after(0, self._update_image)
         except Exception as e:
             self.node.get_logger().warn(f'Image conversion failed: {e}')
 
     def _update_image(self):
-        if self.last_image is None:
+        if self.last_image is None or not self.root.winfo_exists():
             return
         try:
+            self.img_canvas.delete('placeholder')
             pil_img = PIL.Image.fromarray(self.last_image)
-            w, h = self.img_frame.winfo_width(), self.img_frame.winfo_height()
-            if w < 10:
-                w, h = 640, 360
-            pil_img.thumbnail((w, h), PIL.Image.Resampling.LANCZOS)
+            cw = self.img_canvas.winfo_width()
+            ch = self.img_canvas.winfo_height()
+            if cw < 10 or ch < 10:
+                cw, ch = 640, 360
+            # Resampling.LANCZOS is Pillow 9.1+; fallback to LANCZOS/ANTIALIAS on older
+            try:
+                resample = PIL.Image.Resampling.LANCZOS
+            except AttributeError:
+                resample = getattr(PIL.Image, 'LANCZOS', PIL.Image.ANTIALIAS)
+            pil_img.thumbnail((cw, ch), resample)
             self.photo = PIL.ImageTk.PhotoImage(pil_img)
-            self.img_label.configure(image=self.photo, text='')
-            self.img_label.image = self.photo
-        except Exception:
-            pass
+            if self._canvas_image_id is not None:
+                self.img_canvas.delete(self._canvas_image_id)
+            self._canvas_image_id = self.img_canvas.create_image(
+                cw // 2, ch // 2, image=self.photo, anchor=tk.CENTER
+            )
+            self._current_photo = self.photo  # keep ref to prevent GC
+        except Exception as e:
+            self.node.get_logger().warn(f'Image display failed: {e}')
 
     def update_status(self):
+        if not self.root.winfo_exists():
+            return
         self.status_var.set(
             f'Speed target: {self.node.speed:.1f} m/s  |  Steer: {self.node.steering:.2f} rad'
         )
@@ -160,7 +203,7 @@ class KeyboardTeleopNode(Node):
     def __init__(self):
         super().__init__('keyboard_teleop')
         self.declare_parameter('cmd_topic', '/cmd')
-        self.declare_parameter('image_topic', '/zed/left/image_rect_color')
+        self.declare_parameter('image_topic', '/teleop_camera/image_raw')
         self.declare_parameter('publish_rate', 50.0)
         self.declare_parameter('speed_increment', 1.0)
         self.declare_parameter('steering_increment', 0.1)
@@ -176,9 +219,13 @@ class KeyboardTeleopNode(Node):
         self.img_sub = self.create_subscription(
             Image, image_topic, self._img_cb, 10
         )
+        # Subscribe to fallback topics in case primary uses different name
+        for fallback in IMAGE_TOPIC_FALLBACKS:
+            if fallback != image_topic:
+                self.create_subscription(Image, fallback, self._img_cb, 10)
         self.timer = self.create_timer(1.0 / rate, self.publish_cmd)
-
-        self._request_manual_drive()
+        self._manual_drive_enabled = False
+        self._manual_drive_timer = self.create_timer(2.0, self._retry_manual_drive)
 
         self.speed_increment = self.get_parameter('speed_increment').value
         self.steering_increment = self.get_parameter('steering_increment').value
@@ -197,25 +244,34 @@ class KeyboardTeleopNode(Node):
 
     def _img_cb(self, msg):
         if self.window:
+            if not getattr(self, '_img_received', False):
+                self._img_received = True
+                self.get_logger().info('Receiving camera images')
             self.window.image_callback(msg)
 
-    def _request_manual_drive(self):
-        """Call /ros_can/set_mission to enable Manual Drive so /cmd is accepted."""
+    def _retry_manual_drive(self):
+        """Retry /ros_can/set_mission until Manual Drive is enabled (so /cmd is accepted)."""
+        if self._manual_drive_enabled:
+            return
         client = self.create_client(SetCanState, '/ros_can/set_mission')
-        if not client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().warn(
-                '/ros_can/set_mission not available; click Manual Drive in Mission Control'
-            )
+        if not client.wait_for_service(timeout_sec=0.5):
             return
         req = SetCanState.Request()
         req.ami_state = CanState.AMI_MANUAL
         req.as_state = CanState.AS_OFF
         future = client.call_async(req)
-        future.add_done_callback(
-            lambda f: self.get_logger().info('Manual drive enabled')
-            if f.result().success
-            else self.get_logger().warn(f'Set mission failed: {f.result().message}')
-        )
+        future.add_done_callback(self._on_set_mission_done)
+
+    def _on_set_mission_done(self, future):
+        try:
+            result = future.result()
+            if result.success:
+                self._manual_drive_enabled = True
+                self.get_logger().info('Manual drive enabled')
+            else:
+                self.get_logger().warn(f'Set mission failed: {result.message}')
+        except Exception as e:
+            self.get_logger().warn(f'Set mission call failed: {e}')
 
     def set_forward(self, on):
         self.forward = on
@@ -244,16 +300,17 @@ class KeyboardTeleopNode(Node):
 
     def publish_cmd(self):
         if self.forward:
-            target_speed = self.speed
+            target_speed = max(0.0, self.speed)
         elif self.brake:
             target_speed = 0.0
         else:
             target_speed = 0.0
 
+        # A = steer left (positive), D = steer right (negative)
         if self.steer_left:
-            self.steering = max(-self.max_steering, self.steering - self.steering_increment)
-        elif self.steer_right:
             self.steering = min(self.max_steering, self.steering + self.steering_increment)
+        elif self.steer_right:
+            self.steering = max(-self.max_steering, self.steering - self.steering_increment)
         else:
             self.steering *= 0.85
             if abs(self.steering) < 0.01:
@@ -269,7 +326,7 @@ class KeyboardTeleopNode(Node):
         self.pub.publish(msg)
 
         if self.window:
-            self.window.update_status()
+            self.window.root.after(0, self.window.update_status)
 
 
 def main(args=None):
@@ -278,21 +335,26 @@ def main(args=None):
     if not HAS_TK:
         print('tkinter required (usually bundled with Python)')
         return 1
+    if not HAS_IMAGE:
+        print('Camera display requires: cv_bridge, opencv-python, Pillow. Install: sudo apt install ros-humble-cv-bridge; pip install opencv-python Pillow')
+        return 1
 
     node = KeyboardTeleopNode()
     window = TeleopWindow(node)
     node.window = window
 
-    # Integrate rclpy with tkinter: poll ROS in tk main loop
-    def spin():
-        if rclpy.ok() and window.root.winfo_exists():
-            rclpy.spin_once(node, timeout_sec=0)
-            window.root.after(10, spin)
-        else:
-            window.root.quit()
+    # Run ROS executor in background thread so tk mainloop stays responsive
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
+    ros_thread = threading.Thread(target=executor.spin, daemon=True)
+    ros_thread.start()
 
-    window.root.protocol('WM_DELETE_WINDOW', lambda: (rclpy.shutdown(), window.root.quit()))
-    window.root.after(10, spin)
+    def on_closing():
+        rclpy.shutdown()
+        executor.shutdown()
+        window.root.quit()
+
+    window.root.protocol('WM_DELETE_WINDOW', on_closing)
     window.run()
 
     node.destroy_node()

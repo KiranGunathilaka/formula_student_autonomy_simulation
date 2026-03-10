@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<robot name="teleop_camera" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- Minimal camera for teleop view - no visual mesh, always on regardless of launch_group.
+       Publishes to /teleop_camera/image_raw for the falcon_teleop window. -->
+  <xacro:macro name="teleop_camera" params="parent prefix:=teleop_camera *origin">
+    <joint name="${prefix}_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="${prefix}_optical_frame"/>
+      <xacro:insert_block name="origin"/>
+    </joint>
+    <!-- Minimal link: no visual (invisible), tiny collision for Gazebo -->
+    <link name="${prefix}_optical_frame">
+      <inertial>
+        <mass value="0.001"/>
+        <origin rpy="0 0 0" xyz="0 0 0"/>
+        <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+      </inertial>
+      <visual>
+        <origin rpy="0 0 0" xyz="0 0 0"/>
+        <geometry><box size="0.001 0.001 0.001"/></geometry>
+        <material name="transparent"><color rgba="0 0 0 0"/></material>
+      </visual>
+      <collision>
+        <origin rpy="0 0 0" xyz="0 0 0"/>
+        <geometry><box size="0.001 0.001 0.001"/></geometry>
+      </collision>
+    </link>
+    <gazebo reference="${prefix}_optical_frame">
+      <sensor type="camera" name="${prefix}_sensor">
+        <always_on>true</always_on>
+        <update_rate>30.0</update_rate>
+        <visualize>false</visualize>
+        <camera>
+          <horizontal_fov>1.91986</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>B8G8R8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>100</far>
+          </clip>
+        </camera>
+        <plugin name="${prefix}_plugin" filename="libgazebo_ros_camera.so">
+          <ros>
+            <remapping>image_raw:=/${prefix}/image_raw</remapping>
+            <remapping>camera_info:=/${prefix}/camera_info</remapping>
+          </ros>
+          <camera_name>${prefix}</camera_name>
+          <frame_name>${prefix}_optical_frame</frame_name>
+          <hack_baseline>0.0</hack_baseline>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+</robot>
