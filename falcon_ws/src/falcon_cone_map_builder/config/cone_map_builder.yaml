@@ -1,6 +1,34 @@
-cone_map_builder_node:
+falcon_cone_map_builder_node:
   ros__parameters:
-    input_topic: "/perception/cones_fused"
-    output_topic: "/map/cones_map"
-    output_frame: "map"
-    publish_rate_hz: 2.0
+    # Input/output topics
+    input_topic: "/cones"
+    output_map_topic: "/map/cone_map"
+    output_marker_topic: "/map/cone_markers"
+
+    # Reference frame for the global map
+    map_frame: "map"
+
+    # Mahalanobis distance gate for nearest-neighbor association
+    mahalanobis_threshold: 3.0
+
+    # Rate at which the map and markers are published (Hz)
+    publish_rate_hz: 10.0
+
+    # Landmarks not observed within this window are pruned (seconds, 0 = never prune)
+    stale_timeout_s: 0.0
+
+    # Observation count at which confidence saturates to 1.0
+    confidence_saturation: 15
+
+    # RViz cone marker dimensions (meters)
+    cone_marker_height: 0.3
+    cone_marker_radius: 0.1
+
+    # Only associate observations with landmarks of the same color
+    color_gated_association: true
+
+    # TF lookup timeout (seconds)
+    tf_timeout_s: 0.1
+
+    # Number of line segments for covariance ellipse visualization
+    ellipse_segments: 32
