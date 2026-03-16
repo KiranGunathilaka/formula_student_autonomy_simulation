@@ -8,8 +8,10 @@ from rclpy.node import Node
 
 from sensor_msgs.msg import Image, CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
+from yolo_msgs import msg
 from yolo_msgs.msg import DetectionArray
 from cv_bridge import CvBridge
+from eufs_msgs.msg import ConeArrayWithCovariance, ConeWithCovariance
 
 
 class ConeDepthLocalizer(Node):
@@ -56,6 +58,11 @@ class ConeDepthLocalizer(Node):
             "/falcon/cone_markers",
             10,
         )
+        self.camera_cone_pub = self.create_publisher(
+            ConeArrayWithCovariance,
+            "/falcon/camera_cones",
+            10,
+        )
 
         self.get_logger().info("Cone depth localizer started.")
 
@@ -89,6 +96,9 @@ class ConeDepthLocalizer(Node):
 
         img_h, img_w = depth_image.shape[:2]
         marker_array = MarkerArray()
+        cone_msg = ConeArrayWithCovariance()
+        cone_msg.header.frame_id = "base_footprint"
+        cone_msg.header.stamp = msg.header.stamp
 
         for det in msg.detections:
             u = float(det.bbox.center.position.x)
@@ -145,6 +155,20 @@ class ConeDepthLocalizer(Node):
             y_base = self.cam_ty - x_opt
             z_base = self.cam_tz - y_opt
 
+            cone = ConeWithCovariance()
+            cone.point.x = float(x_base)
+            cone.point.y = float(y_base)
+            cone.point.z = 0.0
+
+            # camera covariance based on detection confidence
+            if det.score > 0.9:
+                cone.covariance = [0.02, 0.0, 0.0, 0.02]
+            elif det.score > 0.8:
+                cone.covariance = [0.05, 0.0, 0.0, 0.05]
+            else:
+                cone.covariance = [0.10, 0.0, 0.0, 0.10]
+
+
             self.get_logger().info(
                 f"{det.class_name} | score={det.score:.3f} | "
                 f"pixel=({u:.1f}, {v:.1f}) | "
@@ -189,11 +213,27 @@ class ConeDepthLocalizer(Node):
                 marker.color.g = 1.0
                 marker.color.b = 1.0
 
+            if det.class_name == "blue_cone":
+                cone_msg.blue_cones.append(cone)
+
+            elif det.class_name == "yellow_cone":
+                cone_msg.yellow_cones.append(cone)
+
+            elif det.class_name == "orange_cone":
+                cone_msg.orange_cones.append(cone)
+
+            elif det.class_name == "large_orange_cone":
+                cone_msg.big_orange_cones.append(cone)
+
+            else:
+                cone_msg.unknown_color_cones.append(cone)
+
             marker.lifetime.sec = 0
             marker.lifetime.nanosec = 200000000
 
             marker_array.markers.append(marker)
-
+        
+        self.camera_cone_pub.publish(cone_msg)
         self.marker_pub.publish(marker_array)
 
 

@@ -7,6 +7,7 @@ from rclpy.node import Node
 
 from sensor_msgs.msg import LaserScan
 from visualization_msgs.msg import Marker, MarkerArray
+from eufs_msgs.msg import ConeArrayWithCovariance, ConeWithCovariance
 
 
 class LidarConeDetector(Node):
@@ -45,6 +46,12 @@ class LidarConeDetector(Node):
         self.cluster_pub = self.create_publisher(
             MarkerArray,
             "/falcon/lidar_cluster_markers",
+            10,
+        )
+
+        self.lidar_cone_pub = self.create_publisher(
+            ConeArrayWithCovariance,
+            "/falcon/lidar_cones",
             10,
         )
 
@@ -149,6 +156,9 @@ class LidarConeDetector(Node):
 
     def publish_cluster_centroids(self, msg: LaserScan, clusters):
         marker_array = MarkerArray()
+        cone_msg = ConeArrayWithCovariance()
+        cone_msg.header.frame_id = "base_footprint"
+        cone_msg.header.stamp = msg.header.stamp
 
         for i, cluster in enumerate(clusters):
             if len(cluster) == 0:
@@ -156,6 +166,16 @@ class LidarConeDetector(Node):
 
             cx = sum(p[0] for p in cluster) / len(cluster)
             cy = sum(p[1] for p in cluster) / len(cluster)
+
+            cone = ConeWithCovariance()
+            cone.point.x = float(cx)
+            cone.point.y = float(cy)
+            cone.point.z = 0.0
+
+            # lidar uncertainty (bigger than camera)
+            cone.covariance = [0.15, 0.0, 0.0, 0.15]
+
+            cone_msg.unknown_color_cones.append(cone)
 
             marker = Marker()
             marker.header.frame_id = "base_footprint"
@@ -197,6 +217,7 @@ class LidarConeDetector(Node):
 
             marker_array.markers.append(marker)
 
+        self.lidar_cone_pub.publish(cone_msg)
         self.cluster_pub.publish(marker_array)
 
 

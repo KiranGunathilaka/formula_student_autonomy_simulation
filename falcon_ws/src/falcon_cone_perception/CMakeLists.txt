@@ -14,6 +14,7 @@ install(DIRECTORY models
 install(PROGRAMS
   scripts/cone_depth_localizer.py
   scripts/lidar_cone_detector.py
+  scripts/cone_fuser.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
