@@ -7,14 +7,8 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    eufs_launcher_pkg = FindPackageShare("eufs_launcher")
     falcon_cone_perception_pkg = FindPackageShare("falcon_cone_perception")
     foxglove_bridge_pkg = FindPackageShare("foxglove_bridge")
-
-    eufs_launch = PathJoinSubstitution([
-        eufs_launcher_pkg,
-        "eufs_launcher.launch.py"
-    ])
 
     camera_detection_launch = PathJoinSubstitution([
         falcon_cone_perception_pkg,
@@ -29,21 +23,14 @@ def generate_launch_description():
     ])
 
     return LaunchDescription([
+        # 1) Start Foxglove bridge
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(eufs_launch)
+            AnyLaunchDescriptionSource(foxglove_launch)
         ),
 
+        # 2) Start YOLO camera detection
         TimerAction(
             period=2.0,
-            actions=[
-                IncludeLaunchDescription(
-                    AnyLaunchDescriptionSource(foxglove_launch)
-                )
-            ]
-        ),
-
-        TimerAction(
-            period=4.0,
             actions=[
                 IncludeLaunchDescription(
                     PythonLaunchDescriptionSource(camera_detection_launch)
@@ -51,21 +38,42 @@ def generate_launch_description():
             ]
         ),
 
+        # 3) Start camera depth localization
         TimerAction(
-            period=6.0,
+            period=4.0,
             actions=[
                 Node(
                     package="falcon_cone_perception",
                     executable="cone_depth_localizer.py",
                     name="cone_depth_localizer",
                     output="screen",
-                ),
+                )
+            ]
+        ),
+
+        # 4) Start lidar cone detector
+        TimerAction(
+            period=4.5,
+            actions=[
                 Node(
                     package="falcon_cone_perception",
                     executable="lidar_cone_detector.py",
                     name="lidar_cone_detector",
                     output="screen",
-                ),
+                )
+            ]
+        ),
+
+        # 5) Start cone fuser after camera + lidar nodes
+        TimerAction(
+            period=5.5,
+            actions=[
+                Node(
+                    package="falcon_cone_perception",
+                    executable="cone_fuser.py",
+                    name="cone_fuser",
+                    output="screen",
+                )
             ]
         ),
     ])
