@@ -1,0 +1,3 @@
+#!/usr/bin/env python3
+from falcon_cone_bridge.cone_bridge_node import main
+main()
