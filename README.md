@@ -171,25 +171,74 @@ For a known pose without localization, subscribe to `/ground_truth/state`. The T
 Run the full planning and control stack against the EUFS simulator using ground-truth cone positions — no LiDAR or camera detection required:
 
 ```bash
-# In a fresh terminal (never sourced this workspace):
-cd ~/Projects/Falcon_autonomy/falcon_ws
-source /opt/ros/humble/setup.bash
-bash patch_install.sh        # fix C++ package paths — run once after every colcon build
-source install/setup.bash
+source scripts/setup_falcon.sh
 ros2 launch falcon_bringup autonomy.launch.py
 ```
 
-### What happens
+Drive 3 laps then stop:
 
-| Step | Node | Input → Output |
-|------|------|----------------|
-| 1 | EUFS Gazebo plugin | Publishes cone positions → `/cones` |
-| 2 | `cone_bridge_node` | `/cones` → `/perception/cones_raw` |
-| 3 | `cone_fusion_node` | `/perception/cones_raw` → `/perception/cones_fused` |
-| 4 | `path_planner_node` | `/perception/cones_fused` → `/planning/path` (10 Hz) |
-| 5 | `pure_pursuit_node` | `/planning/path` → `/cmd` Ackermann commands (20 Hz) |
+```bash
+ros2 launch falcon_bringup autonomy.launch.py total_laps:=3
+```
 
-All planning runs in the vehicle body frame (`base_footprint`). The car is always at the origin facing +x, so no odometry or TF tree is needed.
+### Architecture
+
+```
+EUFS Gazebo                                     ┌──────────────────────┐
+  └─ /cones ─────────┬──── cone_bridge ─────┐   │                      │
+     (base_footprint) │      └─ /perception/ │   │   PATH PLANNER       │
+                      │         cones_raw    │   │                      │
+                      │           │          │   │  ┌─ live cones ────┐ │
+                      │      cone_fusion     │   │  │  (body frame)   │ │   /planning/path
+                      │           │          ├───┤  │                 ├─┼──────────────┐
+                      │    /perception/      │   │  │  merge + dedup  │ │              │
+                      │     cones_fused ─────┘   │  │                 │ │       pure_pursuit
+                      │                          │  │                 │ │              │
+                      └── cone_map_builder       │  │  map cones      │ │          /cmd
+                           │                     │  │  (map→body TF)  │ │              │
+                      /map/cone_map ─────────────┤  └─────────────────┘ │         EUFS sim
+                       (map frame)               │                      │
+                                                 │  lap counter         │
+                                                 │  (orange proximity)  │
+                                                 └──────────────────────┘
+```
+
+### How it works
+
+1. **EUFS publishes `/cones`** (base_footprint frame) — only cones in the sensor FOV
+   (front semicircle), not the full track.
+
+2. **cone_bridge** converts EUFS messages to Falcon format on `/perception/cones_raw`.
+   **cone_fusion** relabels to `/perception/cones_fused`. These give the planner
+   *live field-of-view cones* in the vehicle body frame.
+
+3. **cone_map_builder** also subscribes to `/cones`, transforms each observation into
+   the `map` frame via TF, and accumulates a Kalman-filtered landmark map. After the
+   first lap, this map contains *every cone on the track* — even those currently behind
+   the car.
+
+4. **path_planner** subscribes to *both* sources:
+   - `/perception/cones_fused` — live cones, already in body frame.
+   - `/map/cone_map` — accumulated map cones, transformed from map → base_footprint
+     via TF at each planning cycle.
+
+   It **deduplicates** (if a map cone is within `dedup_radius_m` of a live cone of the
+   same color, the live one wins) and then runs the midpoint planning algorithm on the
+   merged set. This means:
+   - **First partial lap:** only live FOV cones are available; the car may see only
+     one side of the track (e.g. 5 blue, 0 yellow). As more cones are observed and
+     added to the map, both sides become visible.
+   - **After one full lap:** the map has the complete track, so the planner always
+     has blue *and* yellow cones to pair — even in sections where live FOV only
+     shows one side.
+
+5. **Lap counting** — the planner tracks orange/big-orange cones near the car (within
+   `orange_detect_radius_m`). When the car enters then exits the orange zone, it
+   increments the lap counter. After `total_laps` (0 = unlimited), the planner stops
+   publishing paths, which causes pure_pursuit's path-timeout safety to bring the car
+   to a stop.
+
+6. **pure_pursuit** follows `/planning/path` with Ackermann steering commands on `/cmd`.
 
 ### RViz visualisation
 
@@ -197,7 +246,8 @@ RViz opens automatically. Set **Fixed Frame = `base_footprint`** and add:
 
 | Display type | Topic | What you see |
 |---|---|---|
-| MarkerArray | `/planning/cone_markers` | Blue/yellow cones + green centerline |
+| MarkerArray | `/planning/cone_markers` | Blue/yellow/orange cones + green centerline |
+| MarkerArray | `/map/cone_markers` | Accumulated map cones with covariance ellipses |
 | Marker | `/planning/lookahead_marker` | Orange sphere — current steering target |
 | Path | `/planning/path` | Waypoints as arrows |
 
@@ -208,13 +258,30 @@ ros2 param set /pure_pursuit_node lookahead_distance 3.5   # smoother, less osci
 ros2 param set /pure_pursuit_node target_speed 1.5         # slower if car spins out
 ```
 
+### Path planner parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `cones_topic` | `/perception/cones_fused` | Live FOV cones (body frame) |
+| `map_topic` | `/map/cone_map` | Accumulated landmark map (map frame) |
+| `total_laps` | `0` | Laps to drive (0 = unlimited) |
+| `orange_detect_radius_m` | `5.0` | Distance within which orange cones trigger lap counting |
+| `dedup_radius_m` | `1.0` | Merge radius for map vs live cone deduplication |
+| `waypoint_ordering` | `forward_x` | `forward_x` (sort by +x) or `nearest_neighbor` |
+| `path_extend_m` | `3.0` | Extend path past last midpoint (metres; 0 = off) |
+| `min_cones_per_side` | `1` | Minimum blue *and* yellow cones required to plan |
+
+### Pure pursuit parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `lookahead_distance` | `2.5` | Lookahead circle radius (metres) |
+| `wheelbase` | `1.53` | Vehicle wheelbase (metres) |
+| `target_speed` | `2.0` | Target forward speed (m/s) |
+| `max_steering_angle` | `0.44` | Steering clamp (radians, ~25°) |
+| `path_timeout_sec` | `0.5` | Stop if no path received within this window |
+
 See [`falcon_planning/README.md`](falcon_ws/src/falcon_planning/README.md) for the full parameter reference and tuning guide.
-
-### Build quirk — patch_install.sh
-
-After every `colcon build`, run `bash patch_install.sh` from the `falcon_ws/` directory.
-
-colcon overwrites `package.dsv` for C++ packages and drops the `local_setup.*` entries needed to register them in `AMENT_PREFIX_PATH`. The patch script re-appends those entries. Without it, `PackageNotFoundError` errors appear at launch time.
 
 ---
 

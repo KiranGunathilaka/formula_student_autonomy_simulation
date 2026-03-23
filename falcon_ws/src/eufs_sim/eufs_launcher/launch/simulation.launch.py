@@ -62,6 +62,11 @@ def generate_launch_description():
             default_value='default',
             description="Determines which launch files are used in the state_machine node"),
 
+        DeclareLaunchArgument(
+            name='show_rqt_gui',
+            default_value='true',
+            description='Launch EUFS RQt perspective (set false if PyQt5/PySide2 unavailable)'),
+
         IncludeLaunchDescription(
             FrontendLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -80,6 +85,7 @@ def generate_launch_description():
                 ('publish_gt_tf', LaunchConfiguration('publish_gt_tf')),
                 ('pub_ground_truth', LaunchConfiguration('pub_ground_truth')),
                 ('launch_group', LaunchConfiguration('launch_group')),
+                ('show_rqt_gui', LaunchConfiguration('show_rqt_gui')),
             ]
         ),
     ])

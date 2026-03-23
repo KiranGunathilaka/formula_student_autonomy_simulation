@@ -10,8 +10,22 @@ pip>=23.0
 wheel
 packaging>=23.2
 tomli>=1.2.2
+# Pulled in by tooling with system-site-packages venv; setuptools/pkg_resources may
+# require these before colcon/setup.py dry-run succeeds (scikit-build-core, etc.).
+typing-extensions>=4.0.0
+exceptiongroup>=1.0.0; python_version < "3.11"
 # ROS 2 Humble rosidl_adapter expects Empy 3.x; Empy 4 breaks (no BUFFERED_OPT).
 empy>=3.3,<4
 # rosidl_parser (interface generation) needs Lark; isolated venvs do not see python3-lark from apt.
 lark>=1.0.0
 colcon-common-extensions
+
+# Runtime: ROS Humble scripts use `#!/usr/bin/env python3`. With the project venv
+# activated, that is .falcon — install these so gazebo_ros (numpy) and rqt (Qt) work.
+# NumPy 2.x breaks cv_bridge (AttributeError: _ARRAY_API not found); keep 1.x.
+numpy>=1.21.0,<2
+PyQt5>=5.15.0
+
+# Perception stack: YOLO-based cone detection.
+# torch is installed separately via --index-url for CUDA support (see setup_falcon.sh).
+ultralytics>=8.0.0

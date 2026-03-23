@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Call /ros_can/set_mission with AMI_MANUAL until it succeeds, then exit.
+
+This replaces the RQt Mission Control "Drive" button so the autonomy stack
+can start without a Qt GUI.
+"""
+import rclpy
+from rclpy.node import Node
+from eufs_msgs.msg import CanState
+from eufs_msgs.srv import SetCanState
+
+
+class EnableManualDrive(Node):
+    def __init__(self):
+        super().__init__('enable_manual_drive')
+        self._client = self.create_client(SetCanState, '/ros_can/set_mission')
+        self._timer = self.create_timer(2.0, self._try_enable)
+
+    def _try_enable(self):
+        if not self._client.wait_for_service(timeout_sec=0.5):
+            self.get_logger().info('Waiting for /ros_can/set_mission …')
+            return
+        req = SetCanState.Request()
+        req.ami_state = CanState.AMI_MANUAL
+        req.as_state = CanState.AS_OFF
+        future = self._client.call_async(req)
+        future.add_done_callback(self._done)
+
+    def _done(self, future):
+        try:
+            result = future.result()
+            if result.success:
+                self.get_logger().info('Manual drive enabled — /cmd accepted')
+                self._timer.cancel()
+                raise SystemExit(0)
+            else:
+                self.get_logger().warn(f'set_mission rejected: {result.message}')
+        except SystemExit:
+            raise
+        except Exception as e:
+            self.get_logger().warn(f'set_mission call failed: {e}')
+
+
+def main():
+    rclpy.init()
+    node = EnableManualDrive()
+    try:
+        rclpy.spin(node)
+    except SystemExit:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+if __name__ == '__main__':
+    main()

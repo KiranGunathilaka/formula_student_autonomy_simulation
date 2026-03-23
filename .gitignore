@@ -6,3 +6,5 @@ __pycache__/
 .vscode/
 .idea/
 .falcon/
+# Cloned by scripts/setup_falcon.sh (Foxglove bridge — build with workspace)
+falcon_ws/src/foxglove-sdk/

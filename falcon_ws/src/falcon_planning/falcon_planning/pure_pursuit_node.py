@@ -15,8 +15,9 @@ Pure Pursuit summary:
 
 Safety:
   - If no path arrives within `path_timeout_sec`, the vehicle stops.
-  - If the last path waypoint is within `goal_tolerance_m` of origin,
-    the vehicle stops (path complete).
+  - Lap counting is handled by the planner (via orange cone detection);
+    when all laps are done the planner stops publishing paths, which
+    triggers the path-timeout safety stop here.
 """
 
 import math
@@ -46,7 +47,6 @@ class PurePursuitNode(Node):
         self.declare_parameter('max_steering_angle',  0.44)   # radians (~25 deg)
         self.declare_parameter('control_rate_hz',     20.0)
         self.declare_parameter('path_timeout_sec',    0.5)    # stop if path stale
-        self.declare_parameter('goal_tolerance_m',    1.0)    # stop near last wp
 
         path_topic    = self.get_parameter('path_topic').value
         cmd_topic     = self.get_parameter('cmd_topic').value
@@ -57,7 +57,6 @@ class PurePursuitNode(Node):
         self._target_speed  = self.get_parameter('target_speed').value
         self._max_steer     = self.get_parameter('max_steering_angle').value
         self._path_timeout  = self.get_parameter('path_timeout_sec').value
-        self._goal_tol      = self.get_parameter('goal_tolerance_m').value
         rate_hz             = self.get_parameter('control_rate_hz').value
 
         self._path: Path | None = None
@@ -94,14 +93,6 @@ class PurePursuitNode(Node):
             return
 
         if not self._path.poses:
-            self._publish_stop()
-            return
-
-        # In base_footprint frame the car is always at the origin.
-        # Check if near last waypoint → goal reached
-        last = self._path.poses[-1].pose.position
-        if math.hypot(last.x, last.y) < self._goal_tol:
-            self.get_logger().info('Goal reached — stopping.', throttle_duration_sec=2.0)
             self._publish_stop()
             return
 

@@ -1,23 +1,31 @@
 """
-Path Planner Node
------------------
-Subscribes to /perception/cones_fused (falcon_msgs/ConeArray, base_footprint
-frame) and computes a centerline path between blue (left) and yellow (right)
-cones using midpoint pairing, then orders the waypoints with a
-nearest-neighbour traversal starting from the car's position.
+Path Planner Node — Map-Aware Multi-Lap Planner
+------------------------------------------------
+Subscribes to both live perception cones AND the accumulated landmark map
+from cone_map_builder. Plans a centerline path through blue/yellow midpoints
+and counts laps by detecting proximity to orange start/finish cones.
 
-All computation is done in the vehicle frame (base_footprint). The car is
-always at the origin (0, 0) in this frame, so no odometry is required.
+Inputs:
+  /perception/cones_fused  (falcon_msgs/ConeArray, base_footprint frame)
+      Live field-of-view cones from the bridge/fusion pipeline.
+  /map/cone_map            (falcon_msgs/ConeArray, map frame)
+      Accumulated landmark map with all cones observed so far. Provides full
+      track visibility once the first lap is complete.
 
-Publishes:
-  /planning/path          (nav_msgs/Path)         — waypoints for the controller
-  /planning/cone_markers  (visualization_msgs/MarkerArray) — RViz visualisation
+Outputs:
+  /planning/path           (nav_msgs/Path, base_footprint frame)
+  /planning/cone_markers   (visualization_msgs/MarkerArray)
+  /planning/lap_count      (std_msgs/Int32) — current completed lap count
 
-Algorithm summary:
-  1. Separate cones into blue and yellow lists.
-  2. For each yellow cone, find its nearest blue counterpart → midpoint.
-  3. Order all midpoints greedily (nearest-neighbour from car at origin).
-  4. Publish the ordered list as a nav_msgs/Path.
+Algorithm:
+  1. Merge live cones (already in body frame) with map cones (transformed from
+     map → base_footprint via TF).
+  2. Deduplicate: if a map cone is within `dedup_radius_m` of a live cone of
+     the same color, keep only the live one (it's more accurate).
+  3. Separate blue / yellow, compute midpoints, order along track.
+  4. Detect orange/big-orange cones near the car; when the car enters then
+     exits the orange zone, increment lap count.
+  5. After `total_laps`, stop publishing paths → car stops.
 """
 
 import math
@@ -27,9 +35,12 @@ from rclpy.node import Node
 
 from falcon_msgs.msg import ConeArray, Cone
 from nav_msgs.msg import Path
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from visualization_msgs.msg import MarkerArray, Marker
+from std_msgs.msg import Int32
 from builtin_interfaces.msg import Duration
+
+import tf2_ros
 
 
 class PathPlannerNode(Node):
@@ -38,74 +49,211 @@ class PathPlannerNode(Node):
         super().__init__('path_planner_node')
 
         self.declare_parameter('cones_topic', '/perception/cones_fused')
+        self.declare_parameter('map_topic', '/map/cone_map')
         self.declare_parameter('path_topic', '/planning/path')
         self.declare_parameter('markers_topic', '/planning/cone_markers')
+        self.declare_parameter('lap_topic', '/planning/lap_count')
         self.declare_parameter('min_cones_per_side', 1)
         self.declare_parameter('plan_rate_hz', 10.0)
+        self.declare_parameter('waypoint_ordering', 'forward_x')
+        self.declare_parameter('path_extend_m', 3.0)
+        self.declare_parameter('min_midpoint_x_m', -1.5)
+        self.declare_parameter('total_laps', 0)
+        self.declare_parameter('dedup_radius_m', 1.0)
+        self.declare_parameter('orange_detect_radius_m', 5.0)
+        self.declare_parameter('map_frame', 'map')
 
-        cones_topic  = self.get_parameter('cones_topic').value
-        path_topic   = self.get_parameter('path_topic').value
+        cones_topic   = self.get_parameter('cones_topic').value
+        map_topic     = self.get_parameter('map_topic').value
+        path_topic    = self.get_parameter('path_topic').value
         markers_topic = self.get_parameter('markers_topic').value
-        self._min_cones = self.get_parameter('min_cones_per_side').value
-        rate_hz      = self.get_parameter('plan_rate_hz').value
+        lap_topic     = self.get_parameter('lap_topic').value
+        self._min_cones     = self.get_parameter('min_cones_per_side').value
+        rate_hz             = self.get_parameter('plan_rate_hz').value
+        self._order_mode    = self.get_parameter('waypoint_ordering').value
+        self._path_extend_m = float(self.get_parameter('path_extend_m').value)
+        self._min_mx        = float(self.get_parameter('min_midpoint_x_m').value)
+        self._total_laps    = self.get_parameter('total_laps').value
+        self._dedup_r       = float(self.get_parameter('dedup_radius_m').value)
+        self._orange_r      = float(self.get_parameter('orange_detect_radius_m').value)
+        self._map_frame     = self.get_parameter('map_frame').value
 
-        self._cone_map: ConeArray | None = None
+        self._live_cones: ConeArray | None = None
+        self._map_cones:  ConeArray | None = None
 
-        self._cone_sub = self.create_subscription(
-            ConeArray, cones_topic, self._cone_callback, 10)
+        self._lap_count = 0
+        self._in_orange_zone = False
+        self._finished = False
+
+        self._tf_buffer   = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+
+        self._live_sub = self.create_subscription(
+            ConeArray, cones_topic, self._live_cb, 10)
+        self._map_sub  = self.create_subscription(
+            ConeArray, map_topic, self._map_cb, 10)
 
         self._path_pub    = self.create_publisher(Path, path_topic, 10)
         self._markers_pub = self.create_publisher(MarkerArray, markers_topic, 10)
+        self._lap_pub     = self.create_publisher(Int32, lap_topic, 10)
 
         self._timer = self.create_timer(1.0 / rate_hz, self._plan)
 
-        self.get_logger().info(f'Path planner ready | cones: {cones_topic}')
+        laps_str = str(self._total_laps) if self._total_laps > 0 else '∞'
+        self.get_logger().info(
+            f'Path planner ready | live: {cones_topic} | map: {map_topic} | '
+            f'laps: {laps_str}')
 
     # ------------------------------------------------------------------ #
     # Callbacks                                                            #
     # ------------------------------------------------------------------ #
 
-    def _cone_callback(self, msg: ConeArray):
-        self._cone_map = msg
+    def _live_cb(self, msg: ConeArray):
+        self._live_cones = msg
+
+    def _map_cb(self, msg: ConeArray):
+        self._map_cones = msg
 
     # ------------------------------------------------------------------ #
     # Planning loop                                                        #
     # ------------------------------------------------------------------ #
 
     def _plan(self):
-        if self._cone_map is None:
+        self._lap_pub.publish(Int32(data=self._lap_count))
+
+        if self._finished:
             return
 
-        blue = [
-            (c.pose.pose.position.x, c.pose.pose.position.y)
-            for c in self._cone_map.cones
-            if c.color == Cone.COLOR_BLUE
-        ]
-        yellow = [
-            (c.pose.pose.position.x, c.pose.pose.position.y)
-            for c in self._cone_map.cones
-            if c.color == Cone.COLOR_YELLOW
-        ]
+        merged = self._merge_cones()
+        if merged is None:
+            return
+
+        blue, yellow, orange = [], [], []
+        for c in merged:
+            if c[2] == Cone.COLOR_BLUE:
+                blue.append((c[0], c[1]))
+            elif c[2] == Cone.COLOR_YELLOW:
+                yellow.append((c[0], c[1]))
+            elif c[2] in (Cone.COLOR_ORANGE, Cone.COLOR_BIG_ORANGE):
+                orange.append((c[0], c[1]))
+
+        self._update_lap_count(orange)
 
         if len(blue) < self._min_cones or len(yellow) < self._min_cones:
             self.get_logger().warn(
                 f'Not enough cones to plan: {len(blue)} blue, {len(yellow)} yellow',
-                throttle_duration_sec=2.0,
-            )
+                throttle_duration_sec=2.0)
             return
 
         midpoints = self._compute_midpoints(blue, yellow)
         if not midpoints:
             return
 
-        # Car is at origin (0,0) in base_footprint frame
-        ordered = self._nearest_neighbour_order(midpoints, start_x=0.0, start_y=0.0)
-        # Always use base_footprint — cone_fusion relabels its output to 'odom'
-        # (which doesn't exist in TF), but the data is actually in vehicle frame.
+        ordered = self._order_waypoints(midpoints)
+        ordered = self._extend_path_end(ordered)
         frame = 'base_footprint'
 
         self._path_pub.publish(self._build_path(ordered, frame))
-        self._markers_pub.publish(self._build_markers(blue, yellow, ordered, frame))
+        self._markers_pub.publish(
+            self._build_markers(blue, yellow, orange, ordered, frame))
+
+    # ------------------------------------------------------------------ #
+    # Cone merging: live (body frame) + map (map→body via TF)             #
+    # ------------------------------------------------------------------ #
+
+    def _merge_cones(self):
+        """Return list of (x, y, color) in base_footprint frame, or None."""
+        live_pts = []
+        if self._live_cones is not None:
+            for c in self._live_cones.cones:
+                live_pts.append((
+                    c.pose.pose.position.x,
+                    c.pose.pose.position.y,
+                    c.color))
+
+        map_pts = self._transform_map_cones()
+
+        if not live_pts and not map_pts:
+            return None
+
+        if not map_pts:
+            return live_pts
+        if not live_pts:
+            return map_pts
+
+        merged = list(live_pts)
+        for mx, my, mc in map_pts:
+            is_dup = False
+            for lx, ly, lc in live_pts:
+                if mc == lc and math.hypot(mx - lx, my - ly) < self._dedup_r:
+                    is_dup = True
+                    break
+            if not is_dup:
+                merged.append((mx, my, mc))
+
+        return merged
+
+    def _transform_map_cones(self):
+        """Transform /map/cone_map cones from map frame → base_footprint."""
+        if self._map_cones is None or not self._map_cones.cones:
+            return []
+
+        try:
+            tf: TransformStamped = self._tf_buffer.lookup_transform(
+                'base_footprint', self._map_frame, rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.05))
+        except (tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException):
+            return []
+
+        tx = tf.transform.translation.x
+        ty = tf.transform.translation.y
+        q = tf.transform.rotation
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        cy, sy = math.cos(yaw), math.sin(yaw)
+
+        pts = []
+        for c in self._map_cones.cones:
+            mx = c.pose.pose.position.x
+            my = c.pose.pose.position.y
+            bx = cy * mx - sy * my + tx
+            by = sy * mx + cy * my + ty
+            pts.append((bx, by, c.color))
+        return pts
+
+    # ------------------------------------------------------------------ #
+    # Lap counting via orange cone proximity                              #
+    # ------------------------------------------------------------------ #
+
+    def _update_lap_count(self, orange_pts):
+        if not orange_pts:
+            if self._in_orange_zone:
+                self._in_orange_zone = False
+                self._lap_count += 1
+                self.get_logger().info(
+                    f'Lap {self._lap_count} completed!')
+                if 0 < self._total_laps <= self._lap_count:
+                    self.get_logger().info(
+                        f'All {self._total_laps} laps done — stopping.')
+                    self._finished = True
+            return
+
+        min_d = min(math.hypot(x, y) for x, y in orange_pts)
+        now_in = min_d < self._orange_r
+
+        if now_in and not self._in_orange_zone:
+            self._in_orange_zone = True
+        elif not now_in and self._in_orange_zone:
+            self._in_orange_zone = False
+            self._lap_count += 1
+            self.get_logger().info(f'Lap {self._lap_count} completed!')
+            if 0 < self._total_laps <= self._lap_count:
+                self.get_logger().info(
+                    f'All {self._total_laps} laps done — stopping.')
+                self._finished = True
 
     # ------------------------------------------------------------------ #
     # Midpoint computation                                                 #
@@ -130,6 +278,37 @@ class PathPlannerNode(Node):
     # ------------------------------------------------------------------ #
     # Waypoint ordering                                                    #
     # ------------------------------------------------------------------ #
+
+    def _order_waypoints(self, points):
+        if not points:
+            return []
+        if self._order_mode == 'nearest_neighbor':
+            return self._nearest_neighbour_order(points, 0.0, 0.0)
+        return self._order_forward_x(points)
+
+    def _order_forward_x(self, points):
+        pool = [(x, y) for x, y in points if x > self._min_mx]
+        if not pool:
+            pool = list(points)
+        return sorted(pool, key=lambda p: (p[0], p[1]))
+
+    def _extend_path_end(self, ordered):
+        if self._path_extend_m <= 0.0 or not ordered:
+            return ordered
+        last = ordered[-1]
+        if len(ordered) >= 2:
+            px, py = ordered[-2]
+            lx, ly = last
+            dx, dy = lx - px, ly - py
+        else:
+            dx, dy = 1.0, 0.0
+        n = math.hypot(dx, dy)
+        if n < 1e-6:
+            dx, dy = 1.0, 0.0
+            n = 1.0
+        ex = last[0] + (dx / n) * self._path_extend_m
+        ey = last[1] + (dy / n) * self._path_extend_m
+        return ordered + [(ex, ey)]
 
     def _nearest_neighbour_order(self, points, start_x=0.0, start_y=0.0):
         remaining = list(points)
@@ -164,7 +343,7 @@ class PathPlannerNode(Node):
 
         return path
 
-    def _build_markers(self, blue, yellow, midpoints, frame):
+    def _build_markers(self, blue, yellow, orange, midpoints, frame):
         markers  = MarkerArray()
         now      = self.get_clock().now().to_msg()
         lifetime = Duration(sec=1, nanosec=0)
@@ -178,6 +357,11 @@ class PathPlannerNode(Node):
             markers.markers.append(
                 _sphere(i, 'yellow_cones', frame, now, lifetime,
                         x, y, r=1.0, g=1.0, b=0.0, scale=0.25))
+
+        for i, (x, y) in enumerate(orange):
+            markers.markers.append(
+                _sphere(i, 'orange_cones', frame, now, lifetime,
+                        x, y, r=1.0, g=0.5, b=0.0, scale=0.3))
 
         for i, (x, y) in enumerate(midpoints):
             markers.markers.append(

@@ -36,6 +36,11 @@ def generate_launch_description():
             default_value='no_perception',
             description="'no_perception' (default): /cones, lidar/camera off. 'default': real lidar (/gazebo_scan) and cameras.",
         ),
+        DeclareLaunchArgument(
+            'show_rqt_gui',
+            default_value='true',
+            description='EUFS RQt mission/steering GUIs (requires Qt in the active Python env)',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sim_launch_path),
             launch_arguments={
@@ -49,6 +54,7 @@ def generate_launch_description():
                 'publish_gt_tf': 'true',
                 'pub_ground_truth': 'true',
                 'launch_group': LaunchConfiguration('launch_group'),
+                'show_rqt_gui': LaunchConfiguration('show_rqt_gui'),
             }.items(),
         ),
     ])

@@ -18,6 +18,7 @@
   <depend>falcon_cone_bridge</depend>
   <depend>falcon_planning</depend>
   <depend>eufs_launcher</depend>
+  <depend>eufs_msgs</depend>
 
   <export>
     <build_type>ament_python</build_type>

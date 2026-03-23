@@ -23,12 +23,11 @@ def generate_launch_description():
     ])
 
     return LaunchDescription([
-        # 1) Start Foxglove bridge
         IncludeLaunchDescription(
             AnyLaunchDescriptionSource(foxglove_launch)
         ),
 
-        # 2) Start YOLO camera detection
+        # Start YOLO camera detection
         TimerAction(
             period=2.0,
             actions=[

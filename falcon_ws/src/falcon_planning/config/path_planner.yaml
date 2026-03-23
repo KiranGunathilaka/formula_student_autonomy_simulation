@@ -1,7 +1,26 @@
 path_planner_node:
   ros__parameters:
+    # --- Input topics ---
     cones_topic: "/perception/cones_fused"
+    map_topic: "/map/cone_map"
+
+    # --- Output topics ---
     path_topic: "/planning/path"
     markers_topic: "/planning/cone_markers"
+    lap_topic: "/planning/lap_count"
+
+    # --- Planning ---
     min_cones_per_side: 1
     plan_rate_hz: 10.0
+    waypoint_ordering: "forward_x"
+    path_extend_m: 3.0
+    min_midpoint_x_m: -1.5
+
+    # --- Map merge ---
+    map_frame: "map"
+    dedup_radius_m: 1.0
+
+    # --- Lap counting ---
+    # 0 = unlimited laps; the planner stops publishing paths after total_laps
+    total_laps: 0
+    orange_detect_radius_m: 5.0

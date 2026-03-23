@@ -1,4 +1,4 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 import os
 from glob import glob
 
@@ -13,6 +13,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
+    scripts=['scripts/enable_manual_drive'],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='FalconE Racing',
@@ -20,5 +21,4 @@ setup(
     description='Launch files for Falcon autonomy stack',
     license='MIT',
     extras_require={'test': ['pytest']},
-    entry_points={},
 )
