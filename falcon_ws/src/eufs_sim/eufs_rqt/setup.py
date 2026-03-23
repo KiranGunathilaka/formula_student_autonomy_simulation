@@ -26,6 +26,6 @@ setup(
     maintainer_email='cambobmat@icloud.com',
     description='RQT GUIs for eufs_sim',
     license='MIT',
-    tests_require=['pytest'],
+    extras_require={'test': ['pytest']},
     scripts=['scripts/eufs_robot_steering_gui', 'scripts/mission_control_gui'],
 )

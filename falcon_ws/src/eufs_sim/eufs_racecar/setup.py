@@ -33,5 +33,5 @@ setup(
     maintainer_email='cambobmat@icloud.com',
     description='Launch, URDF, mesh and material files for autonomous vehicles.',
     license='MIT',
-    tests_require=['pytest'],
+    extras_require={'test': ['pytest']},
 )

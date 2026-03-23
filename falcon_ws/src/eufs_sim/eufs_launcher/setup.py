@@ -25,6 +25,6 @@ setup(
     maintainer_email='cambobmat@icloud.com',
     description='Configures and launches eufs_sim.',
     license='MIT',
-    tests_require=['pytest'],
+    extras_require={'test': ['pytest']},
     scripts=['scripts/eufs_launcher'],
 )

@@ -1,0 +1,17 @@
+# Toolchain for colcon + ament_python with --symlink-install.
+#
+# 1) setuptools>=64: colcon editable installs need "--editable" on the setuptools backend.
+# 2) packaging>=23.2: newer setuptools pulls this; avoid VersionConflict with Ubuntu's
+#    older python3-packaging when colcon runs setup.py --dry-run via sys.executable.
+# 3) colcon-common-extensions: install colcon INTO the venv so `sys.executable` is the
+#    venv Python. System /usr/bin/colcon still uses /usr/bin/python3 and ignores venv.
+setuptools>=64.0.0
+pip>=23.0
+wheel
+packaging>=23.2
+tomli>=1.2.2
+# ROS 2 Humble rosidl_adapter expects Empy 3.x; Empy 4 breaks (no BUFFERED_OPT).
+empy>=3.3,<4
+# rosidl_parser (interface generation) needs Lark; isolated venvs do not see python3-lark from apt.
+lark>=1.0.0
+colcon-common-extensions

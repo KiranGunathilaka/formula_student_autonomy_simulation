@@ -71,7 +71,7 @@ setup(
     maintainer_email='cambobmat@icloud.com',
     description='Procedurally generates tracks and converts between file formats.',
     license='MIT',
-    tests_require=['pytest'],
+    extras_require={'test': ['pytest']},
     scripts=[
         'scripts/eufs_tracks_converter',
         'scripts/eufs_tracks_generator'
