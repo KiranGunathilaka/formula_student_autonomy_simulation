@@ -3,14 +3,22 @@
 <package format="3">
   <name>falcon_cone_map_builder</name>
   <version>0.1.0</version>
-  <description>Global cone map builder</description>
+  <description>Global cone landmark map builder with Mahalanobis-gated association and Gaussian fusion for Formula Student Driverless</description>
   <maintainer email="falcone@gmail.com">FalconE Racing</maintainer>
   <author email="falcone@gmail.com">FalconE Racing</author>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>falcon_msgs</depend>
+  <depend>eufs_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+
+  <build_depend>eigen</build_depend>
 </package>
