@@ -13,9 +13,7 @@
   <depend>launch</depend>
   <depend>launch_ros</depend>
   <depend>falcon_cone_perception</depend>
-  <depend>falcon_cone_fusion</depend>
   <depend>falcon_cone_map_builder</depend>
-  <depend>falcon_cone_bridge</depend>
   <depend>falcon_planning</depend>
   <depend>eufs_launcher</depend>
   <depend>eufs_msgs</depend>

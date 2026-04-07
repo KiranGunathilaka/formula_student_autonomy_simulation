@@ -81,6 +81,11 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
+        imu_base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         left_front_wheel:
           Alpha: 1
           Show Axes: false
@@ -109,17 +114,12 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        rplidar_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         sbg_base_link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        sbg_imu_base_link:
+        teleop_camera_optical_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -193,17 +193,18 @@ Visualization Manager:
     - Class: eufs_rviz_plugins/ConeArrayWithCovariance
       Color: 200; 200; 200
       Color Display: Cone
-      Enabled: false
+      Enabled: true
       Name: Left Camera Cones
       Namespaces:
-        {}
+        cone: true
+        covariance: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /camera_0/cones
-      Value: false
+      Value: true
     - Class: eufs_rviz_plugins/ConeArrayWithCovariance
       Color: 200; 200; 200
       Color Display: Cone
@@ -270,15 +271,25 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        cone_ids: true
-        cones: true
-        covariance: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /map/cone_markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Planning Cone Markers
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /planning/cone_markers
       Value: true
     - Alpha: 1
       Buffer Length: 1
@@ -369,10 +380,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.1897966861724854
+      Pitch: 0.5647972226142883
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 3.056504964828491
+      Yaw: 3.031508207321167
     Saved:
       - Class: rviz_default_plugins/Orbit
         Distance: 8.5

@@ -46,7 +46,7 @@ install(TARGETS falcon_cone_map_builder_node
 install(DIRECTORY include/
   DESTINATION include)
 
-install(DIRECTORY config
+install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()

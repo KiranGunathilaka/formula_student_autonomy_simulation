@@ -1,5 +1,0 @@
-cone_fusion_node:
-  ros__parameters:
-    input_topic: "/perception/cones_raw"
-    output_topic: "/perception/cones_fused"
-    output_frame: "odom"

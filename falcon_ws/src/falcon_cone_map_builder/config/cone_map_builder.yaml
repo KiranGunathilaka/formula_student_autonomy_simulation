@@ -1,7 +1,7 @@
 falcon_cone_map_builder_node:
   ros__parameters:
     # Input/output topics
-    input_topic: "/cones"
+    input_topic: "/falcon/fused_cones"
     output_map_topic: "/map/cone_map"
     output_marker_topic: "/map/cone_markers"
 

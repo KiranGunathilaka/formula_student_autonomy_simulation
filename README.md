@@ -170,40 +170,47 @@ For a known pose without localization, subscribe to `/ground_truth/state`. The T
 
 There are two autonomy launch files — one uses ground-truth cones from the simulator, the other uses the real perception stack (YOLO + LiDAR).
 
-### Option A: Ground-truth cones (no perception)
+### Option A: Ground-truth dev mode (no perception)
 
-Uses EUFS simulated `/cones` (pseudo-perception) — no camera or LiDAR detection:
+Uses EUFS simulated `/cones` (pseudo-perception) with the planning launch file directly:
+
+## Map Builder
+
+```bash
+source scripts/setup_falcon.sh
+ros2 launch falcon_bringup simulation.launch.py launch_group:=no_perception
+ros2 launch falcon_cone_map_builder cone_map_builder.launch.py use_ground_truth:=true
+ros2 launch falcon_teleop teleop.launch.py
+```
+
+## Path Planner
+
+```bash
+source scripts/setup_falcon.sh
+ros2 launch falcon_bringup simulation.launch.py launch_group:=no_perception
+ros2 launch falcon_planning planning.launch.py use_ground_truth:=true totla_laps:=3
+```
+Default lap count is 0 and parsed as infinite
+
+### Option B: Full Autonomy with Real Perception (Recommended)
+
+Uses YOLO camera detection + LiDAR clustering + sensor fusion. The simulator provides raw camera images and LiDAR scans instead of pre-computed cone positions:
 
 ```bash
 source scripts/setup_falcon.sh
 ros2 launch falcon_bringup autonomy.launch.py
 ```
 
-Drive 3 laps then stop:
-
-```bash
-ros2 launch falcon_bringup autonomy.launch.py total_laps:=3
-```
-
-### Option B: Real perception stack (recommended)
-
-Uses YOLO camera detection + LiDAR clustering + sensor fusion. The simulator provides raw camera images and LiDAR scans instead of pre-computed cone positions:
-
-```bash
-source scripts/setup_falcon.sh
-ros2 launch falcon_bringup autonomy_perception.launch.py
-```
-
 Drive 5 laps then stop:
 
 ```bash
-ros2 launch falcon_bringup autonomy_perception.launch.py total_laps:=5
+ros2 launch falcon_bringup autonomy.launch.py total_laps:=5
 ```
 
 Override other arguments:
 
 ```bash
-ros2 launch falcon_bringup autonomy_perception.launch.py total_laps:=3 gazebo_gui:=false rviz:=true
+ros2 launch falcon_bringup autonomy.launch.py total_laps:=3 gazebo_gui:=false rviz:=true
 ```
 
 | Argument | Default | Description |
@@ -226,36 +233,37 @@ EUFS Gazebo (cameras + LiDAR)
   │                                                │
   │                              cone_fuser ◄──────┘
   │                                 │
-  │                 ┌───────────────┼───────────────┐
-  │                 │               │               │
-  │     /falcon/fused_cones    /perception/         │
-  │      (eufs_msgs)            cones_fused         │
-  │          │                 (falcon_msgs)         │
-  │          │                      │               │
-  │   cone_map_builder         path_planner ◄───────┘
-  │          │                      │
-  │    /map/cone_map ──────────►    │
-  │     (map frame)                 │
-  │                          /planning/path
-  │                                 │
-  │                          pure_pursuit
-  │                                 │
-  └──────── /cmd ◄──────────────────┘
+  │                 │
+  │     /falcon/fused_cones (eufs_msgs)
+  │                 │
+  │   cone_map_builder ── /map/cone_map ──► path_planner ◄───────┘
+  │                                                │
+  │                                         /planning/path
+  │                                                │
+  │                                         pure_pursuit
+  │                                                │
+  └──────── /cmd ◄─────────────────────────────────┘
 ```
 
-### Architecture (ground-truth mode)
+### Architecture (ground-truth dev mode)
 
+**1. Map Builder Node**
 ```
-EUFS Gazebo
-  └─ /cones ──────┬── cone_bridge ── cone_fusion ── /perception/cones_fused ──┐
-     (base_footprint) │                                                        │
-                      └── cone_map_builder ── /map/cone_map ──► path_planner ──┤
-                                                                    │          │
-                                                             /planning/path    │
-                                                                    │          │
-                                                             pure_pursuit      │
-                                                                    │          │
-                                                                /cmd ──► EUFS  │
+EUFS Gazebo                         
+  └─ /cones ───► cone_map_builder ──► /map/cone_map
+  (eufs_msgs)                          (map frame)
+```
+
+**2. Planning Nodes**
+```
+EUFS Gazebo                         
+  └─ /cones ───┬─► path_planner ──┐
+  (eufs_msgs)  │                  │
+/map/cone_map ─┘           /planning/path
+                                  │
+                           pure_pursuit
+                                  │
+                              /cmd ──► EUFS
 ```
 
 ### How it works
@@ -269,19 +277,15 @@ EUFS Gazebo
    the car.
 
 3. **path_planner** subscribes to *both* sources:
-   - `/perception/cones_fused` — live cones, already in body frame.
+   - `/falcon/fused_cones` (or `/cones` in dev mode) — live cones, body frame.
    - `/map/cone_map` — accumulated map cones, transformed from map → base_footprint
      via TF at each planning cycle.
 
-   It **deduplicates** (if a map cone is within `dedup_radius_m` of a live cone of the
-   same color, the live one wins) and then runs the midpoint planning algorithm on the
-   merged set. This means:
-   - **First lap:** only live FOV cones are available; the car may see only
-     one side of the track. As more cones are observed and added to the map, both
-     sides become visible. This lap builds the map.
-   - **Subsequent laps:** the map has the complete track, so the planner always
-     has blue *and* yellow cones to pair — even in sections where live FOV only
-     shows one side.
+   It **deduplicates** (merging map and live cones), then computes a midpoint centerline:
+   - Separates cones into blue (left) and yellow (right) boundary lists.
+   - For each cone, finds its nearest counterpart on the opposite side to compute a midpoint.
+   - Orders all midpoints with a greedy nearest-neighbour traversal starting from the car.
+   - First lap: builds the map. Subsequent laps: the map has the complete track, helping navigate blind spots.
 
 4. **Lap counting** — the planner tracks orange/big-orange cones near the car (within
    `orange_detect_radius_m`). When the car enters then exits the orange zone, it
@@ -290,6 +294,8 @@ EUFS Gazebo
    pure_pursuit's path-timeout safety to bring the car to a stop.
 
 5. **pure_pursuit** follows `/planning/path` with Ackermann steering commands on `/cmd`.
+   - Locates the **lookahead point**: the nearest path waypoint strictly ahead of the car that is ≥ `lookahead_distance` away.
+   - Computes turning angle `alpha` to that point, then calculates the required steering `delta = atan(2 * wheelbase * sin(alpha) / lookahead_distance)`.
 
 ### RViz visualisation
 
@@ -316,7 +322,7 @@ ros2 param set /pure_pursuit_node target_speed 1.5         # slower if car spins
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `cones_topic` | `/perception/cones_fused` | Live FOV cones (body frame) |
+| `cones_topic` | `/falcon/fused_cones` | Live FOV cones (body frame) |
 | `map_topic` | `/map/cone_map` | Accumulated landmark map (map frame) |
 | `total_laps` | `0` | Laps to drive (0 = unlimited) |
 | `orange_detect_radius_m` | `5.0` | Distance within which orange cones trigger lap counting |
@@ -335,7 +341,7 @@ ros2 param set /pure_pursuit_node target_speed 1.5         # slower if car spins
 | `max_steering_angle` | `0.44` | Steering clamp (radians, ~25°) |
 | `path_timeout_sec` | `0.5` | Stop if no path received within this window |
 
-See [`falcon_planning/README.md`](falcon_ws/src/falcon_planning/README.md) for the full parameter reference and tuning guide.
+*Tuning pure pursuit:* If the car weaves, increase `lookahead_distance`. If it cuts corners, decrease it. If spinning out on turns, decrease `target_speed`.
 
 ---
 
@@ -348,11 +354,9 @@ See [`falcon_planning/README.md`](falcon_ws/src/falcon_planning/README.md) for t
 | `falcon_common` | C++ | Shared utilities |
 | `falcon_teleop` | Python | Keyboard teleop with embedded front-view |
 | `falcon_drivers` | — | ZED/LiDAR config placeholders |
-| `falcon_cone_perception` | C++ | Raw cone detection from pointcloud |
-| `falcon_cone_fusion` | C++ | Local cone fusion |
+| `falcon_cone_perception` | C++ | Raw cone detection from pointcloud + YOLO + fusion |
 | `falcon_cone_map_builder` | C++ | Global cone map |
 | `falcon_localization` | C++ | Localization |
-| `falcon_cone_bridge` | Python | Converts EUFS sim cones → Falcon ConeArray (sim only) |
 | `falcon_planning` | Python | Centerline path planner + Pure Pursuit controller |
 | `falcon_vehicle_comm` | C++ | Vehicle interface |
 

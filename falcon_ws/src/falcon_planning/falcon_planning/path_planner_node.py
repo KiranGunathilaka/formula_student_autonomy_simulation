@@ -6,11 +6,10 @@ from cone_map_builder. Plans a centerline path through blue/yellow midpoints
 and counts laps by detecting proximity to orange start/finish cones.
 
 Inputs:
-  /perception/cones_fused  (falcon_msgs/ConeArray, base_footprint frame)
-      Live field-of-view cones from the bridge/fusion pipeline.
-  /map/cone_map            (falcon_msgs/ConeArray, map frame)
-      Accumulated landmark map with all cones observed so far. Provides full
-      track visibility once the first lap is complete.
+  /falcon/fused_cones  (eufs_msgs/ConeArrayWithCovariance, base_footprint frame)
+      Live fused cones from the perception pipeline (or /cones in dev mode).
+  /map/cone_map        (falcon_msgs/ConeArray, map frame)
+      Accumulated landmark map with all cones observed so far.
 
 Outputs:
   /planning/path           (nav_msgs/Path, base_footprint frame)
@@ -33,6 +32,7 @@ import math
 import rclpy
 from rclpy.node import Node
 
+from eufs_msgs.msg import ConeArrayWithCovariance
 from falcon_msgs.msg import ConeArray, Cone
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped, TransformStamped
@@ -48,7 +48,7 @@ class PathPlannerNode(Node):
     def __init__(self):
         super().__init__('path_planner_node')
 
-        self.declare_parameter('cones_topic', '/perception/cones_fused')
+        self.declare_parameter('cones_topic', '/falcon/fused_cones')
         self.declare_parameter('map_topic', '/map/cone_map')
         self.declare_parameter('path_topic', '/planning/path')
         self.declare_parameter('markers_topic', '/planning/cone_markers')
@@ -92,7 +92,7 @@ class PathPlannerNode(Node):
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
         self._live_sub = self.create_subscription(
-            ConeArray, cones_topic, self._live_cb, 10)
+            ConeArrayWithCovariance, cones_topic, self._live_cb, 10)
         self._map_sub  = self.create_subscription(
             ConeArray, map_topic, self._map_cb, 10)
 
@@ -111,8 +111,40 @@ class PathPlannerNode(Node):
     # Callbacks                                                            #
     # ------------------------------------------------------------------ #
 
-    def _live_cb(self, msg: ConeArray):
-        self._live_cones = msg
+    def _live_cb(self, msg: ConeArrayWithCovariance):
+        """Convert eufs_msgs/ConeArrayWithCovariance to internal ConeArray."""
+        converted = ConeArray()
+        converted.header = msg.header
+
+        # Map eufs color buckets → falcon Cone color constants
+        color_buckets = [
+            (msg.blue_cones,          Cone.COLOR_BLUE),
+            (msg.yellow_cones,        Cone.COLOR_YELLOW),
+            (msg.orange_cones,        Cone.COLOR_ORANGE),
+            (msg.big_orange_cones,    Cone.COLOR_BIG_ORANGE),
+            (msg.unknown_color_cones, Cone.COLOR_UNKNOWN),
+        ]
+
+        cone_id = 0
+        for eufs_list, color in color_buckets:
+            for ec in eufs_list:
+                c = Cone()
+                c.color = color
+                c.id = cone_id
+                c.confidence = 1.0
+                c.pose.pose.position.x = ec.point.x
+                c.pose.pose.position.y = ec.point.y
+                c.pose.pose.position.z = 0.0
+                c.pose.pose.orientation.w = 1.0
+                if len(ec.covariance) >= 4:
+                    c.pose.covariance[0] = ec.covariance[0]
+                    c.pose.covariance[1] = ec.covariance[1]
+                    c.pose.covariance[6] = ec.covariance[2]
+                    c.pose.covariance[7] = ec.covariance[3]
+                converted.cones.append(c)
+                cone_id += 1
+
+        self._live_cones = converted
 
     def _map_cb(self, msg: ConeArray):
         self._map_cones = msg

@@ -4,9 +4,9 @@ import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.time import Time
 
 from eufs_msgs.msg import ConeArrayWithCovariance, ConeWithCovariance
-from falcon_msgs.msg import ConeArray as FalconConeArray, Cone as FalconCone
 
 
 class ConeFuser(Node):
@@ -16,12 +16,35 @@ class ConeFuser(Node):
         self.latest_camera_cones = None
         self.latest_lidar_cones = None
 
+        # Timestamps of the last received message from each sensor
+        self._camera_stamp: Time | None = None
+        self._lidar_stamp:  Time | None = None
+
         # Matching threshold in meters
         self.match_distance_threshold = 0.60
 
-        # If camera cone has no lidar match, keep it only if covariance is small enough
-        # Since camera node publishes confidence as covariance, this becomes a simple gate
+        # If camera cone has no lidar match, keep it only if covariance is
+        # small enough (i.e. YOLO was confident enough about position)
         self.max_camera_only_covariance = 0.10
+
+        # -------------------------------------------------------------------
+        # FIX: Staleness guard
+        #
+        # ORIGINAL BUG: the fuser fired on every incoming message and fused
+        # against whatever the other sensor last published, with no check on
+        # how old that data was.  Camera at 30 Hz + LiDAR at 10 Hz means the
+        # fuser emits 20 fused outputs per second using LiDAR data that is up
+        # to 100 ms stale.  At vehicle speed this causes spatial mismatches
+        # between the two sensors that create spurious detections, which then
+        # become spurious landmarks in the map.
+        #
+        # FIX: only fuse when both sensors have published at least once AND
+        # neither message is older than max_sensor_age_s relative to the more
+        # recent of the two.  If LiDAR is stale, pass camera-only cones
+        # through using the camera-only covariance path (they already exist).
+        # If camera is stale, pass LiDAR-only cones through (see below).
+        # -------------------------------------------------------------------
+        self.max_sensor_age_s = 0.15   # 150 ms — safe for LiDAR at 10 Hz
 
         self.create_subscription(
             ConeArrayWithCovariance,
@@ -43,141 +66,155 @@ class ConeFuser(Node):
             10,
         )
 
-        self.falcon_fused_pub = self.create_publisher(
-            FalconConeArray,
-            "/perception/cones_fused",
-            10,
-        )
-
         self.get_logger().info("Cone fuser started.")
+
+    # -----------------------------------------------------------------------
+    # Sensor callbacks
+    # -----------------------------------------------------------------------
 
     def camera_callback(self, msg: ConeArrayWithCovariance) -> None:
         self.latest_camera_cones = msg
+        self._camera_stamp = Time.from_msg(msg.header.stamp)
         self.try_fuse()
 
     def lidar_callback(self, msg: ConeArrayWithCovariance) -> None:
         self.latest_lidar_cones = msg
+        self._lidar_stamp = Time.from_msg(msg.header.stamp)
         self.try_fuse()
 
+    # -----------------------------------------------------------------------
+    # Fusion entry point
+    # -----------------------------------------------------------------------
+
     def try_fuse(self) -> None:
+        # Need at least one message from each sensor before fusing
         if self.latest_camera_cones is None or self.latest_lidar_cones is None:
             return
 
         camera_msg = self.latest_camera_cones
-        lidar_msg = self.latest_lidar_cones
+        lidar_msg  = self.latest_lidar_cones
+
+        # -------------------------------------------------------------------
+        # FIX: staleness check
+        # Compute age of each sensor message relative to the newer one.
+        # -------------------------------------------------------------------
+        camera_stamp = self._camera_stamp
+        lidar_stamp  = self._lidar_stamp
+
+        # Newer of the two is the reference time
+        if camera_stamp >= lidar_stamp:
+            lidar_age_s  = (camera_stamp - lidar_stamp).nanoseconds * 1e-9
+            camera_age_s = 0.0
+        else:
+            camera_age_s = (lidar_stamp - camera_stamp).nanoseconds * 1e-9
+            lidar_age_s  = 0.0
+
+        camera_stale = camera_age_s > self.max_sensor_age_s
+        lidar_stale  = lidar_age_s  > self.max_sensor_age_s
 
         fused_msg = ConeArrayWithCovariance()
-        fused_msg.header.stamp = camera_msg.header.stamp
+        # Use the newer stamp as the fused message stamp
+        if camera_stamp >= lidar_stamp:
+            fused_msg.header.stamp = camera_msg.header.stamp
+        else:
+            fused_msg.header.stamp = lidar_msg.header.stamp
         fused_msg.header.frame_id = "base_footprint"
 
-        # LiDAR cones are expected to be published in unknown_color_cones
-        lidar_candidates = list(lidar_msg.unknown_color_cones)
-        used_lidar = set()
+        if camera_stale and lidar_stale:
+            # Both sensors are stale — publish nothing, do not spam old data
+            self.get_logger().warn(
+                "Both camera and LiDAR data are stale — skipping fusion.",
+                throttle_duration_sec=1.0,
+            )
+            return
 
-        # Process each camera color bucket separately so color is preserved
-        self.fuse_bucket(
-            camera_msg.blue_cones,
-            lidar_candidates,
-            used_lidar,
-            fused_msg.blue_cones,
-        )
+        if camera_stale:
+            # Camera is stale: pass LiDAR-only cones as unknown
+            self._passthrough_lidar_only(lidar_msg, fused_msg)
+            self.fused_pub.publish(fused_msg)
+            return
 
-        self.fuse_bucket(
-            camera_msg.yellow_cones,
-            lidar_candidates,
-            used_lidar,
-            fused_msg.yellow_cones,
-        )
+        # LiDAR candidates (may be stale — handled by camera-only fallback path)
+        lidar_candidates = list(lidar_msg.unknown_color_cones) if not lidar_stale else []
+        used_lidar: set[int] = set()
 
-        self.fuse_bucket(
-            camera_msg.orange_cones,
-            lidar_candidates,
-            used_lidar,
-            fused_msg.orange_cones,
-        )
+        # Fuse each camera color bucket; color is preserved from camera side
+        self.fuse_bucket(camera_msg.blue_cones,       lidar_candidates, used_lidar, fused_msg.blue_cones)
+        self.fuse_bucket(camera_msg.yellow_cones,     lidar_candidates, used_lidar, fused_msg.yellow_cones)
+        self.fuse_bucket(camera_msg.orange_cones,     lidar_candidates, used_lidar, fused_msg.orange_cones)
+        self.fuse_bucket(camera_msg.big_orange_cones, lidar_candidates, used_lidar, fused_msg.big_orange_cones)
+        self.fuse_bucket(camera_msg.unknown_color_cones, lidar_candidates, used_lidar, fused_msg.unknown_color_cones)
 
-        self.fuse_bucket(
-            camera_msg.big_orange_cones,
-            lidar_candidates,
-            used_lidar,
-            fused_msg.big_orange_cones,
-        )
-
-        self.fuse_bucket(
-            camera_msg.unknown_color_cones,
-            lidar_candidates,
-            used_lidar,
-            fused_msg.unknown_color_cones,
-        )
+        # -------------------------------------------------------------------
+        # FIX: Add unmatched LiDAR cones to the fused output.
+        #
+        # ORIGINAL BUG: LiDAR cones that had no camera match were silently
+        # dropped.  If the camera missed a cone (occlusion, out of FOV, low
+        # confidence) the cone disappeared from the fused stream entirely,
+        # which eventually caused it to go stale in the map and get pruned.
+        #
+        # FIX: unmatched LiDAR cones are appended as unknown_color_cones with
+        # the LiDAR covariance.  The map builder handles unknown color
+        # correctly — it matches anything spatially and does not contribute
+        # color votes for a specific color.
+        # -------------------------------------------------------------------
+        if not lidar_stale:
+            for idx, lidar_cone in enumerate(lidar_candidates):
+                if idx in used_lidar:
+                    continue
+                passthrough = ConeWithCovariance()
+                passthrough.point.x = float(lidar_cone.point.x)
+                passthrough.point.y = float(lidar_cone.point.y)
+                passthrough.point.z = 0.0
+                # LiDAR-only: use the lidar node's native covariance
+                passthrough.covariance = [0.15, 0.0, 0.0, 0.15]
+                fused_msg.unknown_color_cones.append(passthrough)
 
         self.fused_pub.publish(fused_msg)
-        self.falcon_fused_pub.publish(
-            self._to_falcon_msg(fused_msg))
 
-    def _to_falcon_msg(self, eufs_msg: ConeArrayWithCovariance) -> FalconConeArray:
-        """Convert eufs_msgs/ConeArrayWithCovariance to falcon_msgs/ConeArray."""
-        out = FalconConeArray()
-        out.header = eufs_msg.header
+    # -----------------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------------
 
-        color_buckets = [
-            (eufs_msg.blue_cones,          FalconCone.COLOR_BLUE),
-            (eufs_msg.yellow_cones,        FalconCone.COLOR_YELLOW),
-            (eufs_msg.orange_cones,        FalconCone.COLOR_ORANGE),
-            (eufs_msg.big_orange_cones,    FalconCone.COLOR_BIG_ORANGE),
-            (eufs_msg.unknown_color_cones, FalconCone.COLOR_UNKNOWN),
-        ]
-
-        cone_id = 0
-        for bucket, color in color_buckets:
-            for ec in bucket:
-                fc = FalconCone()
-                fc.color = color
-                fc.id = cone_id
-                fc.confidence = 1.0
-                fc.pose.pose.position.x = ec.point.x
-                fc.pose.pose.position.y = ec.point.y
-                fc.pose.pose.position.z = 0.0
-                fc.pose.pose.orientation.w = 1.0
-                if len(ec.covariance) >= 4:
-                    fc.pose.covariance[0] = ec.covariance[0]
-                    fc.pose.covariance[1] = ec.covariance[1]
-                    fc.pose.covariance[6] = ec.covariance[2]
-                    fc.pose.covariance[7] = ec.covariance[3]
-                out.cones.append(fc)
-                cone_id += 1
-
-        return out
+    def _passthrough_lidar_only(
+        self,
+        lidar_msg: ConeArrayWithCovariance,
+        fused_msg: ConeArrayWithCovariance,
+    ) -> None:
+        """Emit all LiDAR cones as unknown when camera is stale."""
+        for lidar_cone in lidar_msg.unknown_color_cones:
+            cone = ConeWithCovariance()
+            cone.point.x = float(lidar_cone.point.x)
+            cone.point.y = float(lidar_cone.point.y)
+            cone.point.z = 0.0
+            cone.covariance = [0.15, 0.0, 0.0, 0.15]
+            fused_msg.unknown_color_cones.append(cone)
 
     def fuse_bucket(
         self,
         camera_bucket,
         lidar_candidates,
-        used_lidar,
+        used_lidar: set,
         output_bucket,
     ) -> None:
         for cam_cone in camera_bucket:
             cam_x = cam_cone.point.x
             cam_y = cam_cone.point.y
-            cam_z = cam_cone.point.z
 
-            best_idx = -1
+            best_idx  = -1
             best_dist = float("inf")
 
             for idx, lidar_cone in enumerate(lidar_candidates):
                 if idx in used_lidar:
                     continue
-
-                dx = lidar_cone.point.x - cam_x
-                dy = lidar_cone.point.y - cam_y
+                dx   = lidar_cone.point.x - cam_x
+                dy   = lidar_cone.point.y - cam_y
                 dist = math.hypot(dx, dy)
-
                 if dist < best_dist:
                     best_dist = dist
-                    best_idx = idx
+                    best_idx  = idx
 
-            matched = (
-                best_idx != -1 and best_dist < self.match_distance_threshold
-            )
+            matched = best_idx != -1 and best_dist < self.match_distance_threshold
 
             fused_cone = ConeWithCovariance()
 
@@ -188,13 +225,14 @@ class ConeFuser(Node):
                 lidar_x = lidar_cone.point.x
                 lidar_y = lidar_cone.point.y
 
-                # Camera covariance is [cxx, cxy, cyx, cyy]
-                # Use cxx as a rough uncertainty proxy
-                cam_cov = float(cam_cone.covariance[0]) if len(cam_cone.covariance) >= 4 else 0.10
+                # Camera covariance[0] as rough uncertainty proxy
+                cam_cov = (
+                    float(cam_cone.covariance[0])
+                    if len(cam_cone.covariance) >= 4
+                    else 0.10
+                )
 
-                # Confidence-based weighting via covariance:
-                # smaller camera covariance -> trust camera more
-                # larger camera covariance -> trust lidar more
+                # Confidence-based weighting
                 if cam_cov <= 0.02:
                     w_cam = 0.45
                 elif cam_cov <= 0.05:
@@ -204,15 +242,10 @@ class ConeFuser(Node):
 
                 w_lidar = 1.0 - w_cam
 
-                fused_x = w_cam * cam_x + w_lidar * lidar_x
-                fused_y = w_cam * cam_y + w_lidar * lidar_y
-                fused_z = 0.0
+                fused_cone.point.x = float(w_cam * cam_x + w_lidar * lidar_x)
+                fused_cone.point.y = float(w_cam * cam_y + w_lidar * lidar_y)
+                fused_cone.point.z = 0.0
 
-                fused_cone.point.x = float(fused_x)
-                fused_cone.point.y = float(fused_y)
-                fused_cone.point.z = float(fused_z)
-
-                # matched cone -> tighter covariance
                 if cam_cov <= 0.02:
                     fused_cone.covariance = [0.02, 0.0, 0.0, 0.02]
                 elif cam_cov <= 0.05:
@@ -220,24 +253,22 @@ class ConeFuser(Node):
                 else:
                     fused_cone.covariance = [0.06, 0.0, 0.0, 0.06]
 
-                output_bucket.append(fused_cone)
-
             else:
-                # No LiDAR match
-                cam_cov = float(cam_cone.covariance[0]) if len(cam_cone.covariance) >= 4 else 0.10
-
-                # Keep only reasonably confident camera cones
+                # No LiDAR match — apply camera-only covariance gate
+                cam_cov = (
+                    float(cam_cone.covariance[0])
+                    if len(cam_cone.covariance) >= 4
+                    else 0.10
+                )
                 if cam_cov > self.max_camera_only_covariance:
-                    continue
+                    continue  # too uncertain, drop
 
                 fused_cone.point.x = float(cam_x)
                 fused_cone.point.y = float(cam_y)
                 fused_cone.point.z = 0.0
-
-                # camera-only cone gets larger covariance
                 fused_cone.covariance = [0.12, 0.0, 0.0, 0.12]
 
-                output_bucket.append(fused_cone)
+            output_bucket.append(fused_cone)
 
 
 def main(args=None):

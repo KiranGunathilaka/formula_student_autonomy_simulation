@@ -1,7 +1,7 @@
 path_planner_node:
   ros__parameters:
     # --- Input topics ---
-    cones_topic: "/perception/cones_fused"
+    cones_topic: "/falcon/fused_cones"
     map_topic: "/map/cone_map"
 
     # --- Output topics ---

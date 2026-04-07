@@ -28,7 +28,7 @@ def generate_launch_description():
                 "model": model_path,
                 "input_image_topic": "/zed/image_raw",
                 "device": "cuda:0",
-                "threshold": "0.25",
+                "threshold": "0.5",
                 "iou": "0.45",
                 "imgsz_height": "640",
                 "imgsz_width": "640",

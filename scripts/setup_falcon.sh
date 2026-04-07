@@ -24,8 +24,8 @@ FALCON_VENV="${FALCON_VENV:-${WS_ROOT}/.falcon}"
 # Pip verbosity: empty = default, "-v" or "-vv" for download/install progress (override with FALCON_PIP_VERBOSE)
 FALCON_PIP_VERBOSE="${FALCON_PIP_VERBOSE:--v}"
 
-# colcon: stream compiler output (like verbose pip). Quieter: FALCON_COLCON_EVENT_HANDLERS=console_cohesion+
-FALCON_COLCON_EVENT_HANDLERS="${FALCON_COLCON_EVENT_HANDLERS:-console_direct+}"
+# colcon: stream compiler output (like verbose pip). Quieter: FALCON_COLCON_EVENT_HANDLERS=console_cohesion+ or verbose- console_direct+ 
+FALCON_COLCON_EVENT_HANDLERS="${FALCON_COLCON_EVENT_HANDLERS:-console_cohesion+}"
 
 # Required by eufs_tracks for GAZEBO_PLUGIN_PATH
 export EUFS_MASTER="${WS_DIR}"
