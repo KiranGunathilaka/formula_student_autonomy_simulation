@@ -59,8 +59,8 @@
               <horizontal>
                 <samples>1200</samples> <!-- 8000hz/5.5hz / (~360pts) -->
                 <resolution>1</resolution>
-                <min_angle>-3.14159265</min_angle>
-                <max_angle>3.14159265</max_angle>
+                <min_angle>-2.51327</min_angle>
+                <max_angle>2.51327</max_angle>
               </horizontal>
             </scan>
             <range>

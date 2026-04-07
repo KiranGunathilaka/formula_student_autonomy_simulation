@@ -18,7 +18,7 @@ class LidarConeDetector(Node):
         self.lidar_x = 1.683
         self.lidar_y = 0.0
         self.lidar_z = 0.0
-
+        
         self.min_useful_range = 0.25
         self.max_useful_range = 9.0
 

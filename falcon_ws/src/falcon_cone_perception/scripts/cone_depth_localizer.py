@@ -169,12 +169,12 @@ class ConeDepthLocalizer(Node):
                 cone.covariance = [0.10, 0.0, 0.0, 0.10]
 
 
-            self.get_logger().info(
-                f"{det.class_name} | score={det.score:.3f} | "
-                f"pixel=({u:.1f}, {v:.1f}) | "
-                f"sample_pixel=({sample_u}, {sample_v}) | "
-                f"base_xyz=({x_base:.3f}, {y_base:.3f}, {z_base:.3f})"
-            )
+            # self.get_logger().info(
+            #     f"{det.class_name} | score={det.score:.3f} | "
+            #     f"pixel=({u:.1f}, {v:.1f}) | "
+            #     f"sample_pixel=({sample_u}, {sample_v}) | "
+            #     f"base_xyz=({x_base:.3f}, {y_base:.3f}, {z_base:.3f})"
+            # )
 
             marker = Marker()
             marker.header.frame_id = "base_footprint"

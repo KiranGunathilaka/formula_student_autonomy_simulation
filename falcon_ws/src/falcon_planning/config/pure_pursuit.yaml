@@ -1,12 +1,7 @@
-pure_pursuit_node:
+path_planner_node:
   ros__parameters:
+    cones_topic: "/perception/cones_fused"
     path_topic: "/planning/path"
-    cmd_topic: "/cmd"
-    lookahead_marker_topic: "/planning/lookahead_marker"
-    # --- tuning parameters ---
-    lookahead_distance: 2.5      # metres: increase for smoother, decrease for tighter turns
-    wheelbase: 1.53              # metres: ADS-DV formula student car
-    target_speed: 2.0            # m/s: start low, increase once tracking looks good
-    max_steering_angle: 0.44     # radians (~25 degrees)
-    control_rate_hz: 20.0
-    path_timeout_sec: 0.5        # stop if no fresh path within this window
+    markers_topic: "/planning/cone_markers"
+    min_cones_per_side: 1
+    plan_rate_hz: 10.0

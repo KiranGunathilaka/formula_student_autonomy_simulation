@@ -58,6 +58,7 @@ class PathPlannerNode(Node):
         self.declare_parameter('waypoint_ordering', 'forward_x')
         self.declare_parameter('path_extend_m', 3.0)
         self.declare_parameter('min_midpoint_x_m', -1.5)
+        self.declare_parameter('max_path_waypoints', 6)
         self.declare_parameter('total_laps', 0)
         self.declare_parameter('dedup_radius_m', 1.0)
         self.declare_parameter('orange_detect_radius_m', 5.0)
@@ -73,6 +74,7 @@ class PathPlannerNode(Node):
         self._order_mode    = self.get_parameter('waypoint_ordering').value
         self._path_extend_m = float(self.get_parameter('path_extend_m').value)
         self._min_mx        = float(self.get_parameter('min_midpoint_x_m').value)
+        self._max_wps       = self.get_parameter('max_path_waypoints').value
         self._total_laps    = self.get_parameter('total_laps').value
         self._dedup_r       = float(self.get_parameter('dedup_radius_m').value)
         self._orange_r      = float(self.get_parameter('orange_detect_radius_m').value)
@@ -83,6 +85,7 @@ class PathPlannerNode(Node):
 
         self._lap_count = 0
         self._in_orange_zone = False
+        self._ignore_first_exit = True
         self._finished = False
 
         self._tf_buffer   = tf2_ros.Buffer()
@@ -149,7 +152,13 @@ class PathPlannerNode(Node):
         if not midpoints:
             return
 
-        ordered = self._order_waypoints(midpoints)
+        ahead = [(x, y) for x, y in midpoints if x > self._min_mx]
+        if not ahead:
+            ahead = midpoints
+
+        ordered = self._order_waypoints(ahead)
+        if self._max_wps > 0 and len(ordered) > self._max_wps:
+            ordered = ordered[:self._max_wps]
         ordered = self._extend_path_end(ordered)
         frame = 'base_footprint'
 
@@ -232,13 +241,7 @@ class PathPlannerNode(Node):
         if not orange_pts:
             if self._in_orange_zone:
                 self._in_orange_zone = False
-                self._lap_count += 1
-                self.get_logger().info(
-                    f'Lap {self._lap_count} completed!')
-                if 0 < self._total_laps <= self._lap_count:
-                    self.get_logger().info(
-                        f'All {self._total_laps} laps done — stopping.')
-                    self._finished = True
+                self._on_orange_exit()
             return
 
         min_d = min(math.hypot(x, y) for x, y in orange_pts)
@@ -248,30 +251,43 @@ class PathPlannerNode(Node):
             self._in_orange_zone = True
         elif not now_in and self._in_orange_zone:
             self._in_orange_zone = False
-            self._lap_count += 1
-            self.get_logger().info(f'Lap {self._lap_count} completed!')
-            if 0 < self._total_laps <= self._lap_count:
-                self.get_logger().info(
-                    f'All {self._total_laps} laps done — stopping.')
-                self._finished = True
+            self._on_orange_exit()
+
+    def _on_orange_exit(self):
+        if self._ignore_first_exit:
+            self._ignore_first_exit = False
+            self.get_logger().info(
+                'Initial departure from start/finish — not counting as a lap.')
+            return
+        self._lap_count += 1
+        self.get_logger().info(f'Lap {self._lap_count} completed!')
+        if 0 < self._total_laps <= self._lap_count:
+            self.get_logger().info(
+                f'All {self._total_laps} laps done — stopping.')
+            self._finished = True
 
     # ------------------------------------------------------------------ #
     # Midpoint computation                                                 #
     # ------------------------------------------------------------------ #
 
     def _compute_midpoints(self, blue, yellow):
+        """Pair blue and yellow cones 1-to-1 using greedy nearest matching."""
         midpoints = []
         used_blue = set()
+        used_yellow = set()
 
-        for y_pt in yellow:
-            idx = min(range(len(blue)), key=lambda i: _dist(blue[i], y_pt))
-            midpoints.append(_midpoint(y_pt, blue[idx]))
-            used_blue.add(idx)
+        pairs = []
+        for yi, y_pt in enumerate(yellow):
+            for bi, b_pt in enumerate(blue):
+                pairs.append((_dist(y_pt, b_pt), yi, bi))
+        pairs.sort()
 
-        for i, b_pt in enumerate(blue):
-            if i not in used_blue:
-                nearest_y = min(yellow, key=lambda y: _dist(y, b_pt))
-                midpoints.append(_midpoint(b_pt, nearest_y))
+        for d, yi, bi in pairs:
+            if yi in used_yellow or bi in used_blue:
+                continue
+            midpoints.append(_midpoint(yellow[yi], blue[bi]))
+            used_yellow.add(yi)
+            used_blue.add(bi)
 
         return midpoints
 
@@ -282,9 +298,9 @@ class PathPlannerNode(Node):
     def _order_waypoints(self, points):
         if not points:
             return []
-        if self._order_mode == 'nearest_neighbor':
-            return self._nearest_neighbour_order(points, 0.0, 0.0)
-        return self._order_forward_x(points)
+        if self._order_mode == 'forward_x':
+            return self._order_forward_x(points)
+        return self._nearest_neighbour_order(points, 0.0, 0.0)
 
     def _order_forward_x(self, points):
         pool = [(x, y) for x, y in points if x > self._min_mx]

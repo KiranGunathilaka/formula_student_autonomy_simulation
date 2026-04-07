@@ -35,6 +35,7 @@ def generate_launch_description():
                 "use_tracking": "False",
                 "use_3d": "False",
                 "use_debug": "True",
+                "namespace": "yolo",
             }.items(),
         )
     ])

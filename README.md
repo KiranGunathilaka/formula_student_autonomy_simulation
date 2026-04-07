@@ -168,7 +168,11 @@ For a known pose without localization, subscribe to `/ground_truth/state`. The T
 
 ## Autonomous Driving (Simulation)
 
-Run the full planning and control stack against the EUFS simulator using ground-truth cone positions — no LiDAR or camera detection required:
+There are two autonomy launch files — one uses ground-truth cones from the simulator, the other uses the real perception stack (YOLO + LiDAR).
+
+### Option A: Ground-truth cones (no perception)
+
+Uses EUFS simulated `/cones` (pseudo-perception) — no camera or LiDAR detection:
 
 ```bash
 source scripts/setup_falcon.sh
@@ -181,43 +185,90 @@ Drive 3 laps then stop:
 ros2 launch falcon_bringup autonomy.launch.py total_laps:=3
 ```
 
-### Architecture
+### Option B: Real perception stack (recommended)
+
+Uses YOLO camera detection + LiDAR clustering + sensor fusion. The simulator provides raw camera images and LiDAR scans instead of pre-computed cone positions:
+
+```bash
+source scripts/setup_falcon.sh
+ros2 launch falcon_bringup autonomy_perception.launch.py
+```
+
+Drive 5 laps then stop:
+
+```bash
+ros2 launch falcon_bringup autonomy_perception.launch.py total_laps:=5
+```
+
+Override other arguments:
+
+```bash
+ros2 launch falcon_bringup autonomy_perception.launch.py total_laps:=3 gazebo_gui:=false rviz:=true
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `total_laps` | `0` | Number of laps to drive (0 = unlimited) |
+| `gazebo_gui` | `true` | Show Gazebo 3D window |
+| `rviz` | `true` | Launch RViz |
+| `launch_group` | `default` | EUFS sensor group (`default` = cameras + LiDAR) |
+
+### Architecture (perception mode)
 
 ```
-EUFS Gazebo                                     ┌──────────────────────┐
-  └─ /cones ─────────┬──── cone_bridge ─────┐   │                      │
-     (base_footprint) │      └─ /perception/ │   │   PATH PLANNER       │
-                      │         cones_raw    │   │                      │
-                      │           │          │   │  ┌─ live cones ────┐ │
-                      │      cone_fusion     │   │  │  (body frame)   │ │   /planning/path
-                      │           │          ├───┤  │                 ├─┼──────────────┐
-                      │    /perception/      │   │  │  merge + dedup  │ │              │
-                      │     cones_fused ─────┘   │  │                 │ │       pure_pursuit
-                      │                          │  │                 │ │              │
-                      └── cone_map_builder       │  │  map cones      │ │          /cmd
-                           │                     │  │  (map→body TF)  │ │              │
-                      /map/cone_map ─────────────┤  └─────────────────┘ │         EUFS sim
-                       (map frame)               │                      │
-                                                 │  lap counter         │
-                                                 │  (orange proximity)  │
-                                                 └──────────────────────┘
+EUFS Gazebo (cameras + LiDAR)
+  │
+  ├─ /zed/image_raw ──→ YOLO ──→ /yolo/detections
+  │                                    │
+  ├─ /zed/depth/image_raw ──→ cone_depth_localizer ──→ /falcon/camera_cones
+  │                                                          │
+  ├─ /gazebo_scan ──→ lidar_cone_detector ──→ /falcon/lidar_cones
+  │                                                │
+  │                              cone_fuser ◄──────┘
+  │                                 │
+  │                 ┌───────────────┼───────────────┐
+  │                 │               │               │
+  │     /falcon/fused_cones    /perception/         │
+  │      (eufs_msgs)            cones_fused         │
+  │          │                 (falcon_msgs)         │
+  │          │                      │               │
+  │   cone_map_builder         path_planner ◄───────┘
+  │          │                      │
+  │    /map/cone_map ──────────►    │
+  │     (map frame)                 │
+  │                          /planning/path
+  │                                 │
+  │                          pure_pursuit
+  │                                 │
+  └──────── /cmd ◄──────────────────┘
+```
+
+### Architecture (ground-truth mode)
+
+```
+EUFS Gazebo
+  └─ /cones ──────┬── cone_bridge ── cone_fusion ── /perception/cones_fused ──┐
+     (base_footprint) │                                                        │
+                      └── cone_map_builder ── /map/cone_map ──► path_planner ──┤
+                                                                    │          │
+                                                             /planning/path    │
+                                                                    │          │
+                                                             pure_pursuit      │
+                                                                    │          │
+                                                                /cmd ──► EUFS  │
 ```
 
 ### How it works
 
-1. **EUFS publishes `/cones`** (base_footprint frame) — only cones in the sensor FOV
-   (front semicircle), not the full track.
+1. **Perception stack** (perception mode) or **EUFS `/cones`** (ground-truth mode)
+   provides cone detections in the vehicle body frame (`base_footprint`).
 
-2. **cone_bridge** converts EUFS messages to Falcon format on `/perception/cones_raw`.
-   **cone_fusion** relabels to `/perception/cones_fused`. These give the planner
-   *live field-of-view cones* in the vehicle body frame.
-
-3. **cone_map_builder** also subscribes to `/cones`, transforms each observation into
+2. **cone_map_builder** subscribes to cone observations, transforms each one into
    the `map` frame via TF, and accumulates a Kalman-filtered landmark map. After the
    first lap, this map contains *every cone on the track* — even those currently behind
    the car.
 
-4. **path_planner** subscribes to *both* sources:
+3. **path_planner** subscribes to *both* sources:
    - `/perception/cones_fused` — live cones, already in body frame.
    - `/map/cone_map` — accumulated map cones, transformed from map → base_footprint
      via TF at each planning cycle.
@@ -225,24 +276,25 @@ EUFS Gazebo                                     ┌─────────�
    It **deduplicates** (if a map cone is within `dedup_radius_m` of a live cone of the
    same color, the live one wins) and then runs the midpoint planning algorithm on the
    merged set. This means:
-   - **First partial lap:** only live FOV cones are available; the car may see only
-     one side of the track (e.g. 5 blue, 0 yellow). As more cones are observed and
-     added to the map, both sides become visible.
-   - **After one full lap:** the map has the complete track, so the planner always
+   - **First lap:** only live FOV cones are available; the car may see only
+     one side of the track. As more cones are observed and added to the map, both
+     sides become visible. This lap builds the map.
+   - **Subsequent laps:** the map has the complete track, so the planner always
      has blue *and* yellow cones to pair — even in sections where live FOV only
      shows one side.
 
-5. **Lap counting** — the planner tracks orange/big-orange cones near the car (within
+4. **Lap counting** — the planner tracks orange/big-orange cones near the car (within
    `orange_detect_radius_m`). When the car enters then exits the orange zone, it
-   increments the lap counter. After `total_laps` (0 = unlimited), the planner stops
-   publishing paths, which causes pure_pursuit's path-timeout safety to bring the car
-   to a stop.
+   increments the lap counter (the initial departure from the start line is ignored).
+   After `total_laps` (0 = unlimited), the planner stops publishing paths, which causes
+   pure_pursuit's path-timeout safety to bring the car to a stop.
 
-6. **pure_pursuit** follows `/planning/path` with Ackermann steering commands on `/cmd`.
+5. **pure_pursuit** follows `/planning/path` with Ackermann steering commands on `/cmd`.
 
 ### RViz visualisation
 
-RViz opens automatically. Set **Fixed Frame = `base_footprint`** and add:
+RViz opens automatically. Set **Fixed Frame = `base_footprint`** (for live view) or
+`map` (for accumulated map) and add:
 
 | Display type | Topic | What you see |
 |---|---|---|
@@ -250,6 +302,8 @@ RViz opens automatically. Set **Fixed Frame = `base_footprint`** and add:
 | MarkerArray | `/map/cone_markers` | Accumulated map cones with covariance ellipses |
 | Marker | `/planning/lookahead_marker` | Orange sphere — current steering target |
 | Path | `/planning/path` | Waypoints as arrows |
+| MarkerArray | `/falcon/cone_markers` | Camera-detected cones (perception mode) |
+| MarkerArray | `/falcon/lidar_cluster_markers` | LiDAR cluster centroids (perception mode) |
 
 ### Tuning
 

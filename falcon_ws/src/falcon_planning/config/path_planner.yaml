@@ -12,8 +12,9 @@ path_planner_node:
     # --- Planning ---
     min_cones_per_side: 1
     plan_rate_hz: 10.0
-    waypoint_ordering: "forward_x"
-    path_extend_m: 3.0
+    waypoint_ordering: "nearest_neighbor"
+    max_path_waypoints: 5
+    path_extend_m: 0.0
     min_midpoint_x_m: -1.5
 
     # --- Map merge ---
@@ -23,4 +24,4 @@ path_planner_node:
     # --- Lap counting ---
     # 0 = unlimited laps; the planner stops publishing paths after total_laps
     total_laps: 0
-    orange_detect_radius_m: 5.0
+    orange_detect_radius_m: 3.0

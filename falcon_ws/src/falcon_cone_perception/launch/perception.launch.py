@@ -46,6 +46,7 @@ def generate_launch_description():
                     executable="cone_depth_localizer.py",
                     name="cone_depth_localizer",
                     output="screen",
+                    parameters=[{'use_sim_time': True}],
                 )
             ]
         ),
@@ -59,6 +60,7 @@ def generate_launch_description():
                     executable="lidar_cone_detector.py",
                     name="lidar_cone_detector",
                     output="screen",
+                    parameters=[{'use_sim_time': True}],
                 )
             ]
         ),
@@ -72,6 +74,7 @@ def generate_launch_description():
                     executable="cone_fuser.py",
                     name="cone_fuser",
                     output="screen",
+                    parameters=[{'use_sim_time': True}],
                 )
             ]
         ),

@@ -6,6 +6,7 @@ import rclpy
 from rclpy.node import Node
 
 from eufs_msgs.msg import ConeArrayWithCovariance, ConeWithCovariance
+from falcon_msgs.msg import ConeArray as FalconConeArray, Cone as FalconCone
 
 
 class ConeFuser(Node):
@@ -42,6 +43,12 @@ class ConeFuser(Node):
             10,
         )
 
+        self.falcon_fused_pub = self.create_publisher(
+            FalconConeArray,
+            "/perception/cones_fused",
+            10,
+        )
+
         self.get_logger().info("Cone fuser started.")
 
     def camera_callback(self, msg: ConeArrayWithCovariance) -> None:
@@ -60,7 +67,7 @@ class ConeFuser(Node):
         lidar_msg = self.latest_lidar_cones
 
         fused_msg = ConeArrayWithCovariance()
-        fused_msg.header.stamp = self.get_clock().now().to_msg()
+        fused_msg.header.stamp = camera_msg.header.stamp
         fused_msg.header.frame_id = "base_footprint"
 
         # LiDAR cones are expected to be published in unknown_color_cones
@@ -104,6 +111,42 @@ class ConeFuser(Node):
         )
 
         self.fused_pub.publish(fused_msg)
+        self.falcon_fused_pub.publish(
+            self._to_falcon_msg(fused_msg))
+
+    def _to_falcon_msg(self, eufs_msg: ConeArrayWithCovariance) -> FalconConeArray:
+        """Convert eufs_msgs/ConeArrayWithCovariance to falcon_msgs/ConeArray."""
+        out = FalconConeArray()
+        out.header = eufs_msg.header
+
+        color_buckets = [
+            (eufs_msg.blue_cones,          FalconCone.COLOR_BLUE),
+            (eufs_msg.yellow_cones,        FalconCone.COLOR_YELLOW),
+            (eufs_msg.orange_cones,        FalconCone.COLOR_ORANGE),
+            (eufs_msg.big_orange_cones,    FalconCone.COLOR_BIG_ORANGE),
+            (eufs_msg.unknown_color_cones, FalconCone.COLOR_UNKNOWN),
+        ]
+
+        cone_id = 0
+        for bucket, color in color_buckets:
+            for ec in bucket:
+                fc = FalconCone()
+                fc.color = color
+                fc.id = cone_id
+                fc.confidence = 1.0
+                fc.pose.pose.position.x = ec.point.x
+                fc.pose.pose.position.y = ec.point.y
+                fc.pose.pose.position.z = 0.0
+                fc.pose.pose.orientation.w = 1.0
+                if len(ec.covariance) >= 4:
+                    fc.pose.covariance[0] = ec.covariance[0]
+                    fc.pose.covariance[1] = ec.covariance[1]
+                    fc.pose.covariance[6] = ec.covariance[2]
+                    fc.pose.covariance[7] = ec.covariance[3]
+                out.cones.append(fc)
+                cone_id += 1
+
+        return out
 
     def fuse_bucket(
         self,
