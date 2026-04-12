@@ -9,12 +9,17 @@ xhost +local:root >/dev/null 2>&1 || true
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Check if nvidia-smi exists to determine if we should enable GPUs
-if command -v nvidia-smi &> /dev/null; then
-    echo "[docker_run] NVIDIA GPU detected. Enabling GPU support."
+# Enable --gpus only when the driver actually responds (nvidia-smi may be
+# installed while the kernel module is missing, Secure Boot blocks loading, etc.)
+if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
+    echo "[docker_run] NVIDIA driver responding. Enabling GPU support."
     GPU_ARGS="--gpus all"
+elif command -v nvidia-smi &> /dev/null; then
+    echo "[docker_run] nvidia-smi is present but the driver is not responding; running without --gpus."
+    echo "[docker_run] Fix the host driver (reinstall, reboot, disable Secure Boot if it blocks modules), then install nvidia-container-toolkit for Docker GPU."
+    GPU_ARGS=""
 else
-    echo "[docker_run] No NVIDIA GPU detected. Running in standard CPU mode."
+    echo "[docker_run] No NVIDIA tools detected. Running in standard CPU mode."
     GPU_ARGS=""
 fi
 
