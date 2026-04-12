@@ -85,6 +85,8 @@ _falcon_ensure_venv() {
       echo "[setup_falcon] pip upgrade failed."
       return 1
     fi
+    # Force uninstall empy and EmPy to prevent PIP case-sensitivity caching bugs (EmPy 4 shadowing EmPy 3)
+    python -m pip uninstall -y empy EmPy >/dev/null 2>&1 || true
     if ! _pip -r "${FALCON_ENV_REQUIREMENTS}"; then
       echo "[setup_falcon] pip install -r ${FALCON_ENV_REQUIREMENTS} failed (check network / errors above)."
       return 1
@@ -134,14 +136,12 @@ _falcon_ensure_venv() {
         return 1
       fi
     fi
-    # Empy 4.x breaks rosidl_adapter (AttributeError: em.BUFFERED_OPT); torch/other deps may upgrade empy.
-    _empy_maj="$(python -c "import importlib.metadata as m; print(int(m.version('empy').split('.')[0]))" 2>/dev/null || echo 99)"
-    if [ "${_empy_maj}" -ge 4 ] 2>/dev/null; then
-      echo "[setup_falcon] Pinning empy<4 for ROS Humble rosidl (foxglove_msgs, etc.) …"
-      if ! _pip 'empy>=3.3,<4' --force-reinstall; then
-        echo "[setup_falcon] empy pin failed."
-        return 1
-      fi
+    # Pip 23+ frequently caches empy-4.x wheels dynamically downloaded by indirect EmPy dependencies.
+    # We must rigorously obliterate and force empy 3.3.4 so rosidl_adapter.resource does not crash on BUFFERED_OPT.
+    echo "[setup_falcon] Enforcing empy==3.3.4 for ROS Humble rosidl …"
+    if ! _pip 'empy==3.3.4' --force-reinstall --no-deps >/dev/null 2>&1; then
+      echo "[setup_falcon] empy 3.3.4 pin failed."
+      return 1
     fi
   fi
   return 0
@@ -185,6 +185,8 @@ _falcon_rosdep_install() {
     return 0
   fi
   echo "[setup_falcon] rosdep install --from-paths src (verbose; may ask for sudo) …"
+  # Refresh apt cache since Docker caches get stale and ros apt packages churn frequently
+  sudo apt-get update -y >/dev/null 2>&1 || true
   # -r = continue on errors so one missing rosdep key does not abort the whole workspace
   rosdep install --from-paths "${WS_DIR}/src" --ignore-src -y -r || true
   return 0
