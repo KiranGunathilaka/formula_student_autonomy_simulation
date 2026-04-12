@@ -19,6 +19,7 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o 
 RUN apt-get update && apt-get install -y \
     ros-humble-desktop \
     ros-humble-gazebo-ros-pkgs \
+    ros-humble-foxglove-bridge \
     python3-rosdep \
     && rm -rf /var/lib/apt/lists/*
 
@@ -52,6 +53,23 @@ RUN python3 -m venv --system-site-packages ${FALCON_VENV} \
 
 # Working directory
 WORKDIR /workspace
+
+# Copy strictly required source files (avoids polluted host build/install folders)
+COPY falcon_ws/src /workspace/falcon_ws/src
+COPY scripts /workspace/scripts
+
+# Pre-bake ROS workspace dependencies
+RUN . /opt/ros/humble/setup.sh \
+    && apt-get update -y \
+    && rosdep install --from-paths "/workspace/falcon_ws/src" --ignore-src -y -r || true
+
+# Build the workspace using the isolated venv
+RUN . /opt/ros/humble/setup.sh \
+    && . ${FALCON_VENV}/bin/activate \
+    && export PYTHONNOUSERSITE=1 \
+    && cd /workspace/falcon_ws \
+    && colcon build --symlink-install --merge-install \
+    --cmake-args "-DPYTHON_EXECUTABLE=${FALCON_VENV}/bin/python3" "-DPython3_EXECUTABLE=${FALCON_VENV}/bin/python3"
 
 # Set up entrypoint
 COPY docker/ros_entrypoint.sh /ros_entrypoint.sh
