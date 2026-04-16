@@ -13,58 +13,96 @@ namespace falcon_cone_map_builder
 ConeMapBuilderNode::ConeMapBuilderNode(const rclcpp::NodeOptions & options)
 : Node("falcon_cone_map_builder_node", options), next_id_(0)
 {
-  // Standard parameters – unchanged
-  declare_parameter<std::string>("input_topic",          "/cones");
-  declare_parameter<std::string>("output_map_topic",     "/map/cone_map");
-  declare_parameter<std::string>("output_marker_topic",  "/map/cone_markers");
-  declare_parameter<std::string>("map_frame",            "map");
-  declare_parameter<double>("mahalanobis_threshold",     3.0);
-  declare_parameter<double>("publish_rate_hz",           10.0);
-  declare_parameter<double>("stale_timeout_s",           0.0);
-  declare_parameter<int>("confidence_saturation",        15);
-  declare_parameter<double>("cone_marker_height",        0.3);
-  declare_parameter<double>("cone_marker_radius",        0.1);
-  declare_parameter<bool>("color_gated_association",     true);
-  declare_parameter<double>("tf_timeout_s",              0.1);
-  declare_parameter<int>("ellipse_segments",             32);
+  // ---------------------------------------------------------------------------
+  // Standard parameters
+  // ---------------------------------------------------------------------------
+  declare_parameter<std::string>("input_topic",         "/cones");
+  declare_parameter<std::string>("output_map_topic",    "/map/cone_map");
+  declare_parameter<std::string>("output_marker_topic", "/map/cone_markers");
+  declare_parameter<std::string>("map_frame",           "map");
+  declare_parameter<double>("mahalanobis_threshold",    3.0);
+  declare_parameter<double>("publish_rate_hz",          10.0);
+  declare_parameter<double>("stale_timeout_s",          0.0);
+  declare_parameter<int>("confidence_saturation",       15);
+  declare_parameter<double>("cone_marker_height",       0.3);
+  declare_parameter<double>("cone_marker_radius",       0.1);
+  declare_parameter<bool>("color_gated_association",    true);
+  declare_parameter<double>("tf_timeout_s",             0.1);
+  declare_parameter<int>("ellipse_segments",            32);
 
   // ---------------------------------------------------------------------------
-  // FIX parameters – soft color gate (see findNearestLandmark for full explanation)
-  //
-  //   color_lock_threshold  [0.0 – 1.0]
-  //     Confidence level above which a landmark's color is considered settled.
-  //     Once settled, a cross-color observation triggers a hard reject (original
-  //     behaviour). While below this threshold the landmark is still "learning"
-  //     and a cross-color observation may associate with a distance penalty.
-  //     Recommended starting value: 0.4  (locks after ~6 of 15 observations)
-  //
-  //   color_mismatch_penalty  [>= 1.0]
-  //     Multiplicative factor applied to the Mahalanobis distance for a
-  //     cross-color candidate when the landmark is not yet settled.
-  //     Value of 2.0 means a same-color candidate at distance d beats a
-  //     cross-color candidate at distance d/2 or closer.
+  // Soft color-gate parameters
   // ---------------------------------------------------------------------------
-  declare_parameter<double>("color_lock_threshold",   0.4);
+  declare_parameter<double>("color_lock_threshold",   0.8);
   declare_parameter<double>("color_mismatch_penalty", 2.0);
 
-  input_topic_          = get_parameter("input_topic").as_string();
-  output_map_topic_     = get_parameter("output_map_topic").as_string();
-  output_marker_topic_  = get_parameter("output_marker_topic").as_string();
-  map_frame_            = get_parameter("map_frame").as_string();
-  mahalanobis_threshold_= get_parameter("mahalanobis_threshold").as_double();
-  publish_rate_hz_      = get_parameter("publish_rate_hz").as_double();
-  stale_timeout_s_      = get_parameter("stale_timeout_s").as_double();
-  confidence_saturation_=
-    static_cast<uint32_t>(get_parameter("confidence_saturation").as_int());
-  cone_marker_height_     = get_parameter("cone_marker_height").as_double();
-  cone_marker_radius_     = get_parameter("cone_marker_radius").as_double();
-  color_gated_association_= get_parameter("color_gated_association").as_bool();
-  tf_timeout_s_           = get_parameter("tf_timeout_s").as_double();
-  ellipse_segments_       = get_parameter("ellipse_segments").as_int();
+  // ---------------------------------------------------------------------------
+  // Euclidean fallback (duplicate prevention)
+  // ---------------------------------------------------------------------------
+  declare_parameter<double>("euclidean_fallback_radius", 1.0);
 
-  // FIX: read soft color-gate parameters
+  // ---------------------------------------------------------------------------
+  // Relative-count pruning parameters
+  //
+  //   relative_prune_enabled (bool, default: true)
+  //     Master switch. Disable without removing other parameters.
+  //
+  //   relative_prune_radius (double, meters, default: 2.0)
+  //     Euclidean search radius for finding dominating neighbors.
+  //     Should be large enough to always capture the real cone a false
+  //     duplicate sits beside, but small enough not to reach genuinely
+  //     separate real cones on the far side of the track.
+  //     Recommended: 1.5 – 2.5 m for a Formula Student track.
+  //
+  //   relative_prune_ratio (double, 0.0 – 1.0, default: 0.1)
+  //     A landmark is pruned if its count < (neighbor_count * ratio).
+  //     Equivalently: the neighbor must have at least (1/ratio)x more
+  //     observations. Default 0.1 means a 10:1 ratio is required.
+  //     Lower  → more aggressive pruning (e.g. 0.05 = 20:1 required)
+  //     Higher → more conservative pruning (e.g. 0.2 = 5:1 required)
+  //
+  //   relative_prune_min_observations (int, default: 30)
+  //     A landmark is NEVER a prune candidate until its own
+  //     observation_count reaches this floor, regardless of neighbor counts.
+  //     This prevents newly-created real landmarks from being pruned before
+  //     they have had a chance to accumulate observations.
+  //     Rule of thumb: perception_rate_hz * grace_period_seconds.
+  //     At 10 Hz with a 3 s grace period → 30.
+  // ---------------------------------------------------------------------------
+  declare_parameter<bool>("relative_prune_enabled",            true);
+  declare_parameter<double>("relative_prune_radius",           20.0);
+  declare_parameter<double>("relative_prune_ratio",            0.2);
+  declare_parameter<int>("relative_prune_min_observations",    10);
+
+  // Read standard parameters
+  input_topic_           = get_parameter("input_topic").as_string();
+  output_map_topic_      = get_parameter("output_map_topic").as_string();
+  output_marker_topic_   = get_parameter("output_marker_topic").as_string();
+  map_frame_             = get_parameter("map_frame").as_string();
+  mahalanobis_threshold_ = get_parameter("mahalanobis_threshold").as_double();
+  publish_rate_hz_       = get_parameter("publish_rate_hz").as_double();
+  stale_timeout_s_       = get_parameter("stale_timeout_s").as_double();
+  confidence_saturation_ =
+    static_cast<uint32_t>(get_parameter("confidence_saturation").as_int());
+  cone_marker_height_      = get_parameter("cone_marker_height").as_double();
+  cone_marker_radius_      = get_parameter("cone_marker_radius").as_double();
+  color_gated_association_ = get_parameter("color_gated_association").as_bool();
+  tf_timeout_s_            = get_parameter("tf_timeout_s").as_double();
+  ellipse_segments_        = get_parameter("ellipse_segments").as_int();
+
+  // Read color-gate parameters
   color_lock_threshold_   = get_parameter("color_lock_threshold").as_double();
   color_mismatch_penalty_ = get_parameter("color_mismatch_penalty").as_double();
+
+  // Read Euclidean fallback parameter
+  euclidean_fallback_radius_ = get_parameter("euclidean_fallback_radius").as_double();
+
+  // Read relative-count pruning parameters
+  relative_prune_enabled_          = get_parameter("relative_prune_enabled").as_bool();
+  relative_prune_radius_           = get_parameter("relative_prune_radius").as_double();
+  relative_prune_ratio_            = get_parameter("relative_prune_ratio").as_double();
+  relative_prune_min_observations_ =
+    static_cast<uint32_t>(get_parameter("relative_prune_min_observations").as_int());
 
   tf_buffer_   = std::make_shared<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -88,8 +126,17 @@ ConeMapBuilderNode::ConeMapBuilderNode(const rclcpp::NodeOptions & options)
     input_topic_.c_str(), output_map_topic_.c_str(), output_marker_topic_.c_str());
 
   RCLCPP_INFO(get_logger(),
-    "Color recovery: color_lock_threshold=%.2f  color_mismatch_penalty=%.2f",
-    color_lock_threshold_, color_mismatch_penalty_);
+    "Color gate: lock_threshold=%.2f  mismatch_penalty=%.2f  euclidean_fallback=%.2f m",
+    color_lock_threshold_, color_mismatch_penalty_, euclidean_fallback_radius_);
+
+  if (relative_prune_enabled_) {
+    RCLCPP_INFO(get_logger(),
+      "Relative pruning: enabled  radius=%.2f m  ratio=%.3f  min_obs=%u",
+      relative_prune_radius_, relative_prune_ratio_,
+      relative_prune_min_observations_);
+  } else {
+    RCLCPP_INFO(get_logger(), "Relative pruning: disabled");
+  }
 }
 
 // =============================================================================
@@ -109,6 +156,7 @@ void ConeMapBuilderNode::conesCallback(
   std::lock_guard<std::mutex> lock(map_mutex_);
   processObservations(observations, stamp_sec);
   pruneStale(stamp_sec);
+  pruneRelative();
 }
 
 // =============================================================================
@@ -181,54 +229,59 @@ void ConeMapBuilderNode::extractCones(
 // Data association and fusion
 // =============================================================================
 
+// -----------------------------------------------------------------------------
+// processObservations
+//
+// Three-stage association for each incoming observation:
+//
+//   Stage 1 — Mahalanobis gate (primary, color-aware):
+//     Finds the nearest landmark by Mahalanobis distance. Cross-color
+//     observations receive a distance penalty for unsettled landmarks and
+//     are hard-rejected for settled ones.
+//
+//   Stage 2 — Euclidean fallback (color-blind):
+//     Triggered only when stage 1 rejects everything. Guards against the
+//     color penalty pushing a valid spatial match above the Mahalanobis
+//     threshold and causing a duplicate to be created.
+//
+//   Stage 3 — Create new landmark:
+//     Only reached when no spatially close landmark exists at all.
+// -----------------------------------------------------------------------------
+
 void ConeMapBuilderNode::processObservations(
   const std::vector<Observation> & observations,
   double stamp_sec)
 {
   for (const auto & obs : observations) {
+    // Stage 1: Mahalanobis gate
     double best_distance = std::numeric_limits<double>::max();
     int idx = findNearestLandmark(obs, best_distance);
 
     if (idx >= 0 && best_distance < mahalanobis_threshold_) {
       fuseLandmark(landmarks_[idx], obs, stamp_sec);
-    } else {
-      landmarks_.push_back(createLandmark(obs, stamp_sec));
+      continue;
     }
+
+    // Stage 2: Euclidean fallback — prevents duplicates caused by color penalty
+    int eucl_idx = findNearestLandmarkEuclidean(obs);
+    if (eucl_idx >= 0) {
+      fuseLandmark(landmarks_[eucl_idx], obs, stamp_sec);
+      continue;
+    }
+
+    // Stage 3: Genuinely new cone
+    landmarks_.push_back(createLandmark(obs, stamp_sec));
   }
 }
 
 // -----------------------------------------------------------------------------
 // findNearestLandmark
 //
-// BUG FIXED HERE – original code (hard color gate):
-//
-//   if (color_gated_association_ &&
-//       obs.color != COLOR_UNKNOWN && lm.color != COLOR_UNKNOWN &&
-//       obs.color != lm.color) {
-//     continue;   // hard skip — cross-color observation NEVER reaches fuseLandmark
-//   }
-//
-// ROOT CAUSE OF THE DUPLICATE-LANDMARK BUG:
-//   Perception misclassifies cone color on early detections (e.g. yellow seen
-//   as blue). The hard "continue" prevents the correctly-colored observation
-//   from associating with the existing wrong-colored landmark. Instead it
-//   creates a new landmark at the same location. Both then accumulate votes
-//   in isolation and neither corrects, because the color gate forever prevents
-//   them from ever associating with the other's observations.
-//   dominantColor() was correct but unreachable for cross-color observations.
-//
-// FIX – two-regime gate:
-//
-//   Regime 1 (landmark NOT settled: confidence < color_lock_threshold_):
-//     Cross-color observation is allowed to associate but its Mahalanobis
-//     distance is multiplied by color_mismatch_penalty_.  Same-color
-//     associations are strongly preferred, but a spatially close cross-color
-//     observation can still win, flow into fuseLandmark(), increment the
-//     correct color's vote, and eventually dominantColor() flips the label.
-//
-//   Regime 2 (landmark settled: confidence >= color_lock_threshold_):
-//     Hard reject resumes. A well-established landmark cannot be flipped by
-//     a single misclassified observation from the perception layer.
+// Two-regime color gate:
+//   Regime 1 (unsettled: confidence < color_lock_threshold_):
+//     Cross-color candidates allowed with a Mahalanobis distance penalty.
+//   Regime 2 (settled: confidence >= color_lock_threshold_):
+//     Cross-color candidates hard-rejected.
 // -----------------------------------------------------------------------------
 
 int ConeMapBuilderNode::findNearestLandmark(
@@ -240,7 +293,6 @@ int ConeMapBuilderNode::findNearestLandmark(
   for (size_t i = 0; i < landmarks_.size(); ++i) {
     const auto & lm = landmarks_[i];
 
-    // Determine the color-gate penalty for this candidate
     double color_penalty = 1.0;
 
     if (color_gated_association_ &&
@@ -249,11 +301,9 @@ int ConeMapBuilderNode::findNearestLandmark(
         obs.color != lm.color)
     {
       if (lm.confidence >= color_lock_threshold_) {
-        // Regime 2: landmark color is settled — hard reject
-        continue;
+        continue;  // Regime 2: hard reject
       }
-      // Regime 1: landmark is still learning — apply distance penalty
-      color_penalty = color_mismatch_penalty_;
+      color_penalty = color_mismatch_penalty_;  // Regime 1: soft penalty
     }
 
     const Eigen::Vector2d diff = obs.position - lm.position;
@@ -261,7 +311,7 @@ int ConeMapBuilderNode::findNearestLandmark(
 
     const double det = S.determinant();
     if (det < 1e-12) {
-      continue;  // degenerate covariance — skip
+      continue;  // degenerate covariance
     }
 
     const double d2 = diff.transpose() * S.inverse() * diff;
@@ -276,10 +326,32 @@ int ConeMapBuilderNode::findNearestLandmark(
   return best_idx;
 }
 
+// -----------------------------------------------------------------------------
+// findNearestLandmarkEuclidean
+//
+// Color-blind Euclidean fallback. Returns the index of the closest landmark
+// within euclidean_fallback_radius_, or -1 if none found.
+// -----------------------------------------------------------------------------
+
+int ConeMapBuilderNode::findNearestLandmarkEuclidean(const Observation & obs) const
+{
+  int    best_idx  = -1;
+  double best_dist = euclidean_fallback_radius_;  // strict < gate
+
+  for (size_t i = 0; i < landmarks_.size(); ++i) {
+    const double d = (obs.position - landmarks_[i].position).norm();
+    if (d < best_dist) {
+      best_dist = d;
+      best_idx  = static_cast<int>(i);
+    }
+  }
+
+  return best_idx;
+}
+
 void ConeMapBuilderNode::fuseLandmark(
   Landmark & lm, const Observation & obs, double stamp_sec)
 {
-  // Kalman-style covariance-weighted fusion — unchanged
   const Eigen::Matrix2d S = lm.covariance + obs.covariance;
   const Eigen::Matrix2d K = lm.covariance * S.inverse();
 
@@ -291,10 +363,6 @@ void ConeMapBuilderNode::fuseLandmark(
   lm.observation_count++;
   lm.last_seen_sec = stamp_sec;
   lm.color_votes[obs.color]++;
-
-  // dominantColor() was always correct. Now that the soft gate above lets
-  // cross-color observations reach this function during the learning phase,
-  // this single call is sufficient to correct an early misclassification.
   lm.color = lm.dominantColor();
 
   lm.confidence = std::min(1.0,
@@ -317,6 +385,10 @@ Landmark ConeMapBuilderNode::createLandmark(
   return lm;
 }
 
+// =============================================================================
+// Pruning
+// =============================================================================
+
 void ConeMapBuilderNode::pruneStale(double now_sec)
 {
   if (stale_timeout_s_ <= 0.0) {
@@ -329,6 +401,111 @@ void ConeMapBuilderNode::pruneStale(double now_sec)
         return (now_sec - lm.last_seen_sec) > stale_timeout_s_;
       }),
     landmarks_.end());
+}
+
+// -----------------------------------------------------------------------------
+// pruneRelative  (NEW)
+//
+// Removes landmarks that are dominated by a nearby neighbor in terms of
+// observation count, indicating they are false/duplicate landmarks rather
+// than real cones.
+//
+// Algorithm (single pass, no sorting required):
+//
+//   For each landmark A:
+//     1. Skip if A.observation_count < relative_prune_min_observations_
+//        (not old enough to judge — could be a newly-seen real cone)
+//     2. Scan all other landmarks B where distance(A, B) < relative_prune_radius_
+//     3. If any such B has observation_count > A.observation_count / ratio_,
+//        mark A for removal
+//
+//   After the scan, erase all marked landmarks in one pass.
+//
+// Important implementation detail: we mark-then-erase rather than erasing
+// inside the outer loop to avoid iterator invalidation and to ensure that
+// mutual domination (two weak landmarks next to each other) is resolved
+// consistently — both get checked against the same snapshot of the map.
+//
+// Logging: pruned landmarks are logged at DEBUG level with their ID and
+// counts so the behavior can be verified during tuning without spamming
+// the console at INFO level during normal operation.
+// -----------------------------------------------------------------------------
+
+void ConeMapBuilderNode::pruneRelative()
+{
+  if (!relative_prune_enabled_ || landmarks_.size() < 2) {
+    return;
+  }
+
+  const double radius_sq = relative_prune_radius_ * relative_prune_radius_;
+
+  // Collect indices to remove in this pass (avoids iterator invalidation)
+  std::vector<size_t> to_remove;
+
+  for (size_t i = 0; i < landmarks_.size(); ++i) {
+    const Landmark & candidate = landmarks_[i];
+
+    // Guard: do not prune until the candidate has enough observations to
+    // distinguish it from a freshly-created real landmark.
+    if (candidate.observation_count < relative_prune_min_observations_) {
+      continue;
+    }
+
+    // The count threshold this candidate must exceed to survive:
+    // candidate survives iff no neighbor has more than (count / ratio) obs.
+    // Rearranged: prune if neighbor_count > candidate_count / ratio
+    //             i.e.  neighbor_count * ratio > candidate_count
+    const double survival_threshold =
+      static_cast<double>(candidate.observation_count) / relative_prune_ratio_;
+
+    bool dominated = false;
+    for (size_t j = 0; j < landmarks_.size(); ++j) {
+      if (j == i) {
+        continue;
+      }
+
+      const Landmark & neighbor = landmarks_[j];
+
+      // Euclidean distance check (squared to avoid sqrt)
+      const double dx = candidate.position.x() - neighbor.position.x();
+      const double dy = candidate.position.y() - neighbor.position.y();
+      if ((dx * dx + dy * dy) > radius_sq) {
+        continue;
+      }
+
+      // Domination check: neighbor has proportionally far more observations
+      if (static_cast<double>(neighbor.observation_count) > survival_threshold) {
+        dominated = true;
+        RCLCPP_DEBUG(get_logger(),
+          "Relative prune: landmark %u (obs=%u) dominated by landmark %u "
+          "(obs=%u) at dist=%.2f m — marking for removal",
+          candidate.id,
+          candidate.observation_count,
+          neighbor.id,
+          neighbor.observation_count,
+          std::sqrt(dx * dx + dy * dy));
+        break;  // one dominating neighbor is sufficient
+      }
+    }
+
+    if (dominated) {
+      to_remove.push_back(i);
+    }
+  }
+
+  if (to_remove.empty()) {
+    return;
+  }
+
+  // Erase in reverse index order so earlier indices stay valid
+  // (std::remove_if with a set lookup is also fine, but index-based reverse
+  // erase is simpler to reason about for a small vector)
+  for (auto it = to_remove.rbegin(); it != to_remove.rend(); ++it) {
+    RCLCPP_INFO(get_logger(),
+      "Relative prune: removed landmark id=%u (obs=%u)",
+      landmarks_[*it].id, landmarks_[*it].observation_count);
+    landmarks_.erase(landmarks_.begin() + static_cast<std::ptrdiff_t>(*it));
+  }
 }
 
 // =============================================================================
@@ -362,7 +539,6 @@ void ConeMapBuilderNode::publishMap(const rclcpp::Time & stamp)
     cone.pose.pose.orientation.w = 1.0;
 
     // 6×6 row-major covariance — fill the XY block only
-    // index = row * 6 + col
     cone.pose.covariance[0]  = lm.covariance(0, 0);  // xx
     cone.pose.covariance[1]  = lm.covariance(0, 1);  // xy
     cone.pose.covariance[6]  = lm.covariance(1, 0);  // yx
@@ -441,7 +617,7 @@ void ConeMapBuilderNode::publishMarkers(const rclcpp::Time & stamp)
     const Eigen::Matrix2d eigenvectors = solver.eigenvectors();
 
     const double angle = std::atan2(eigenvectors(1, 0), eigenvectors(0, 0));
-    constexpr double kChi2Scale = 2.448;  // √(chi2 95% CI, 2 DOF)
+    constexpr double kChi2Scale = 2.448;  // sqrt(chi2 95% CI, 2 DOF)
     const double rx = kChi2Scale * std::sqrt(std::max(0.0, eigenvalues(0)));
     const double ry = kChi2Scale * std::sqrt(std::max(0.0, eigenvalues(1)));
 

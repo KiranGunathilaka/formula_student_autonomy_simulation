@@ -1,6 +1,9 @@
 falcon_cone_map_builder_node:
   ros__parameters:
-    # Input/output topics
+
+    # --------------------------------------------------------------------------
+    # Input / output topics
+    # --------------------------------------------------------------------------
     input_topic: "/falcon/fused_cones"
     output_map_topic: "/map/cone_map"
     output_marker_topic: "/map/cone_markers"
@@ -8,27 +11,104 @@ falcon_cone_map_builder_node:
     # Reference frame for the global map
     map_frame: "map"
 
-    # Mahalanobis distance gate for nearest-neighbor association
-    mahalanobis_threshold: 3.0
+    # --------------------------------------------------------------------------
+    # Data association
+    # --------------------------------------------------------------------------
 
-    # Rate at which the map and markers are published (Hz)
-    publish_rate_hz: 10.0
-
-    # Landmarks not observed within this window are pruned (seconds, 0 = never prune)
-    stale_timeout_s: 0.0
-
-    # Observation count at which confidence saturates to 1.0
-    confidence_saturation: 15
-
-    # RViz cone marker dimensions (meters)
-    cone_marker_height: 0.3
-    cone_marker_radius: 0.1
-
-    # Only associate observations with landmarks of the same color
-    color_gated_association: true
+    # Mahalanobis distance gate for nearest-neighbor association.
+    # Observations with a penalised Mahalanobis distance above this threshold
+    # fall through to the Euclidean fallback or landmark creation.
+    mahalanobis_threshold: 2.0
 
     # TF lookup timeout (seconds)
     tf_timeout_s: 0.1
 
-    # Number of line segments for covariance ellipse visualization
+    # --------------------------------------------------------------------------
+    # Color gate
+    # --------------------------------------------------------------------------
+
+    # Enable / disable color-gated association entirely.
+    color_gated_association: true
+
+    # Confidence level [0.0 – 1.0] above which a landmark's color is
+    # considered settled and cross-color observations are hard-rejected.
+    # With confidence_saturation=15:
+    #   0.8 → settles after ~12 observations
+    #   0.4 → settles after ~6 observations
+    color_lock_threshold: 0.8
+
+    # Mahalanobis distance multiplier for cross-color observations against
+    # unsettled landmarks. Must be >= 1.0.
+    # 2.0 → a same-color match at distance d beats a cross-color match
+    #        at distance d/2 or closer.
+    color_mismatch_penalty: 2.0
+
+    # --------------------------------------------------------------------------
+    # Euclidean fallback (duplicate prevention)
+    # --------------------------------------------------------------------------
+    # When the Mahalanobis gate rejects all candidates, this purely spatial
+    # radius is checked before creating a new landmark. Any existing landmark
+    # within this distance is fused regardless of color.
+    # Set to roughly half the minimum inter-cone spacing on your track.
+    # Formula Student typical spacing ~3 m → safe default: 1.0 m.
+    euclidean_fallback_radius: 0.2
+
+    # --------------------------------------------------------------------------
+    # Relative-count pruning  (NEW)
+    # --------------------------------------------------------------------------
+    # Removes landmarks whose observation count is much lower than a nearby
+    # neighbor's count, indicating they are false/duplicate landmarks.
+    #
+    # A landmark is pruned when ALL of the following hold:
+    #   1. Its observation_count >= relative_prune_min_observations
+    #   2. A neighbor within relative_prune_radius has an observation_count
+    #      greater than (this landmark's count / relative_prune_ratio)
+    #      i.e. the neighbor dominates by at least a (1/ratio)-fold margin.
+
+    # Master switch — set false to disable without removing the parameters.
+    relative_prune_enabled: true
+
+    # Euclidean search radius for finding dominating neighbors [meters].
+    # Should capture the real cone that a false duplicate sits next to,
+    # but not reach genuinely separate cones across the track.
+    # Recommended range: 1.5 – 2.5 m for a Formula Student track.
+    relative_prune_radius: 2.5
+
+    # Domination ratio threshold [0.0 – 1.0].
+    # A landmark is pruned if neighbor_count > own_count / ratio.
+    # Equivalently, the neighbor must have at least (1/ratio)x more obs.
+    #   0.10 → 10:1 ratio required (default, quite aggressive)
+    #   0.05 → 20:1 ratio required (more conservative)
+    #   0.20 →  5:1 ratio required (more aggressive)
+    # Given your observed counts (~200+ real vs ~0–20 false), 0.1 is safe.
+    # If real cones are being accidentally removed, lower this value.
+    relative_prune_ratio: 0.08
+
+    # Minimum observation count a landmark must have before it can be pruned.
+    # This protects genuinely new cones that haven't accumulated observations
+    # yet. Rule of thumb: perception_rate_hz * grace_period_seconds.
+    # At ~10 Hz detection rate with a 3 s grace period → 30.
+    # Increase if you see real cones being pruned early in a run.
+    relative_prune_min_observations: 1
+
+    # --------------------------------------------------------------------------
+    # Confidence and map lifecycle
+    # --------------------------------------------------------------------------
+
+    # Observation count at which confidence saturates to 1.0.
+    confidence_saturation: 15
+
+    # Landmarks not observed within this window are pruned (0 = never prune).
+    stale_timeout_s: 70.0
+
+    # --------------------------------------------------------------------------
+    # Publisher
+    # --------------------------------------------------------------------------
+    publish_rate_hz: 10.0
+
+    # --------------------------------------------------------------------------
+    # RViz marker appearance
+    # --------------------------------------------------------------------------
+    cone_marker_height: 0.3
+    cone_marker_radius: 0.1
     ellipse_segments: 32

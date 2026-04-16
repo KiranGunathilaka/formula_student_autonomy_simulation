@@ -12,8 +12,6 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
-// Explicit std_msgs include – colorForCone() returns this type.
-// Do not rely on transitive inclusion from other headers.
 #include <std_msgs/msg/color_rgba.hpp>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -72,9 +70,14 @@ private:
     const std::vector<Observation> & observations,
     double stamp_sec);
 
-  // Return index of nearest landmark under Mahalanobis gate, or -1.
+  // Primary gate: Mahalanobis distance with soft color penalty.
   int findNearestLandmark(
     const Observation & obs, double & best_distance) const;
+
+  // Fallback gate: color-blind Euclidean proximity used before landmark
+  // creation to prevent duplicates caused by color-penalised Mahalanobis
+  // distances exceeding the threshold.
+  int findNearestLandmarkEuclidean(const Observation & obs) const;
 
   void fuseLandmark(
     Landmark & lm, const Observation & obs, double stamp_sec);
@@ -82,7 +85,37 @@ private:
   Landmark createLandmark(
     const Observation & obs, double stamp_sec);
 
+  // -------------------------------------------------------------------------
+  // Pruning
+  // -------------------------------------------------------------------------
+
+  // Time-based staleness pruning (existing): removes landmarks not observed
+  // within stale_timeout_s_. No-op when stale_timeout_s_ <= 0.
   void pruneStale(double now_sec);
+
+  // ---------------------------------------------------------------------------
+  // Relative-count pruning (NEW):
+  //
+  // Removes landmarks whose observation_count is much lower than that of a
+  // nearby neighbor, indicating they are false/duplicate landmarks rather than
+  // real cones.
+  //
+  // Rationale: after the association fixes, real cones accumulate observations
+  // on every vehicle pass (hundreds of counts over a run) while false/duplicate
+  // landmarks stagnate at low counts (< ~20) because nearly all detections are
+  // now correctly routed to the dominant neighbor. The count gap is reliable
+  // and robust enough to use as a pruning signal.
+  //
+  // A landmark is pruned when ALL of the following hold:
+  //   1. Its observation_count >= relative_prune_min_observations_
+  //      (protects genuinely new landmarks that simply haven't been seen yet)
+  //   2. There exists a neighbor within relative_prune_radius_ whose
+  //      observation_count > (this landmark's count / relative_prune_ratio_)
+  //      i.e. the neighbor has proportionally far more observations
+  //
+  // Called from conesCallback after every observation batch.
+  // ---------------------------------------------------------------------------
+  void pruneRelative();
 
   // -------------------------------------------------------------------------
   // Publishing
@@ -110,9 +143,18 @@ private:
   double   tf_timeout_s_;
   int      ellipse_segments_;
 
-  // FIX: two new parameters for the soft color gate (see cone_map_builder_node.cpp)
-  double color_lock_threshold_;    // confidence above which color is "settled"
-  double color_mismatch_penalty_;  // Mahalanobis multiplier for unsettled mismatch
+  // Soft color gate
+  double color_lock_threshold_;
+  double color_mismatch_penalty_;
+
+  // Euclidean fallback (duplicate prevention)
+  double euclidean_fallback_radius_;
+
+  // Relative-count pruning
+  bool     relative_prune_enabled_;
+  double   relative_prune_radius_;
+  double   relative_prune_ratio_;
+  uint32_t relative_prune_min_observations_;
 
   // -------------------------------------------------------------------------
   // TF2

@@ -41,12 +41,12 @@ class PurePursuitNode(Node):
         self.declare_parameter('cmd_topic',              '/cmd')
         self.declare_parameter('lookahead_marker_topic', '/planning/lookahead_marker')
 
-        self.declare_parameter('lookahead_distance',  2.5)    # metres
-        self.declare_parameter('wheelbase',           1.53)   # metres (ADS-DV)
-        self.declare_parameter('target_speed',        2.0)    # m/s
-        self.declare_parameter('max_steering_angle',  0.44)   # radians (~25 deg)
-        self.declare_parameter('control_rate_hz',     20.0)
-        self.declare_parameter('path_timeout_sec',    0.5)    # stop if path stale
+        self.declare_parameter('lookahead_distance')    # metres
+        self.declare_parameter('wheelbase')             # metres (ADS-DV)
+        self.declare_parameter('target_speed')          # m/s
+        self.declare_parameter('max_steering_angle')    # radians (~25 deg)
+        self.declare_parameter('control_rate_hz')
+        self.declare_parameter('path_timeout_sec')      # stop if path stale
 
         path_topic    = self.get_parameter('path_topic').value
         cmd_topic     = self.get_parameter('cmd_topic').value
