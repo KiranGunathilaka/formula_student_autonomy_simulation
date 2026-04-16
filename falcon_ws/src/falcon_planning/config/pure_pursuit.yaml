@@ -3,9 +3,9 @@ pure_pursuit_node:
     path_topic: "/planning/path"
     cmd_topic: "/cmd"
     lookahead_marker_topic: "/planning/lookahead_marker"
-    lookahead_distance: 2.5
-    wheelbase: 1.53
-    target_speed: 2.0
-    max_steering_angle: 0.44
+    lookahead_distance: 3
+    wheelbase: 1.58
+    target_speed: 3.0
+    max_steering_angle: 0.52
     control_rate_hz: 20.0
-    path_timeout_sec: 0.5
+    path_timeout_sec: 0.2

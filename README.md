@@ -4,7 +4,27 @@ Formula Student Driverless stack: ZED1 + 2D LiDAR, cone-based mapping.
 
 **ROS 2 Humble.**
 
-## Build & Setup
+## Quick Start (Docker - Recommended)
+
+The easiest way to build and run the autonomy stack without affecting your local environment is via Docker. The containerized setup will work on Ubuntu 22.04 and higher (not tested on Ubuntu 25.04 though).
+
+**1. Build the Docker container:**
+```bash
+./docker/docker_build.sh
+```
+
+**2. Run the Docker container:**
+```bash
+./docker/docker_run.sh
+```
+
+**3. Run the autonomy script (inside the container):**
+```bash
+ros2 launch falcon_bringup autonomy.launch.py
+```
+This will launch the Gazebo simulation and the complete autonomous stack (perception, mapping, planning, control).
+
+## Local Build & Setup
 
 From the repository root (source it, don't run):
 

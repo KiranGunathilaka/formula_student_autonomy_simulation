@@ -11,7 +11,7 @@ path_planner_node:
 
     # --- Planning ---
     min_cones_per_side: 1
-    plan_rate_hz: 10.0
+    plan_rate_hz: 20.0
     waypoint_ordering: "nearest_neighbor"
     max_path_waypoints: 5
     path_extend_m: 0.0

@@ -82,7 +82,7 @@ falcon_cone_map_builder_node:
     #   0.20 →  5:1 ratio required (more aggressive)
     # Given your observed counts (~200+ real vs ~0–20 false), 0.1 is safe.
     # If real cones are being accidentally removed, lower this value.
-    relative_prune_ratio: 0.08
+    relative_prune_ratio: 0.09
 
     # Minimum observation count a landmark must have before it can be pruned.
     # This protects genuinely new cones that haven't accumulated observations
