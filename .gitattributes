@@ -1,0 +1,42 @@
+# Normalize line endings so scripts keep working when checked out on Windows/WSL
+# and run inside the Linux Docker container. Without this, CRLF endings corrupt
+# shebang lines (e.g. "#!/usr/bin/env python3\r"), causing exit code 127.
+* text=auto eol=lf
+
+*.py text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+
+*.cpp text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+package.xml text eol=lf
+
+*.xml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.msg text eol=lf
+*.srv text eol=lf
+*.action text eol=lf
+*.rviz text eol=lf
+*.world text eol=lf
+*.urdf text eol=lf
+*.xacro text eol=lf
+
+# Windows-only helper scripts should keep CRLF
+*.ps1 text eol=crlf
+
+# Binary assets ,never touch line endings
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.stl binary
+*.dae binary
+*.pth binary
+*.onnx binary
+*.engine binary
