@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPU Lidar Check</title>
+<meta name="description" content="Gazebo's GPU lidar against an exact ray-cast on the RTX 5060 laptop: the same cones detected for every lidar profile, plus a full-stack perception lap.">
+<meta name="date" content="2026-11-05">
+<style>
+:root{color-scheme:light;--bg:#fcfcfb;--panel:#f3f2ef;--ink:#0b0b0b;--ink2:#52514e;--ink3:#76756f;
+--rule:#dddcd6;--accent:#2a78d6;--s1:#2a78d6;--s2:#eb6834;--bad:#b42318;--badbg:#fdecea;--code:#efeee9;
+--ok:#0f7b3f}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#1a1a19;--panel:#232321;
+--ink:#f0efec;--ink2:#c3c2b7;--ink3:#9a998f;--rule:#3a3936;--accent:#3987e5;--s1:#3987e5;--s2:#d95926;
+--bad:#ff8a80;--badbg:#3a1f1d;--code:#2a2a27;--ok:#5fd08f}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#1a1a19;--panel:#232321;--ink:#f0efec;--ink2:#c3c2b7;--ink3:#9a998f;
+--rule:#3a3936;--accent:#3987e5;--s1:#3987e5;--s2:#d95926;--bad:#ff8a80;--badbg:#3a1f1d;--code:#2a2a27;--ok:#5fd08f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:32px 16px 64px}
+h1{font-size:2rem;margin:0 0 4px;letter-spacing:-.01em}
+h2{font-size:1.35rem;margin:44px 0 10px;padding-top:14px;border-top:1px solid var(--rule)}
+h3{font-size:1.05rem;margin:26px 0 8px}
+p,li{color:var(--ink)} .meta{color:var(--ink2);margin:0 0 22px;font-size:.95rem}
+.lede{font-size:1.1rem;color:var(--ink2);margin:0 0 6px}
+.key{background:var(--panel);border-radius:10px;padding:14px 18px;margin:18px 0}
+.key h2{border:0;margin:0 0 6px;padding:0;font-size:1.05rem}
+.key ul{margin:0;padding-left:20px} .key li{margin:6px 0}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.88em}
+code{background:var(--code);padding:1px 5px;border-radius:4px}
+pre{background:var(--code);padding:12px 14px;border-radius:8px;overflow-x:auto;line-height:1.45}
+pre code{background:none;padding:0}
+.tw{overflow-x:auto;margin:10px 0 6px;border:1px solid var(--rule);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:.84rem}
+th,td{padding:6px 8px;text-align:left;border-bottom:1px solid var(--rule);vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--panel)} tbody tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.ref td{color:var(--ink2);font-style:italic}
+td.bad{color:var(--bad);background:var(--badbg);font-weight:600}
+.ratio{display:block;font-size:.78em;color:var(--ink3)} td.bad .ratio{color:var(--bad)}
+.note{color:var(--ink2);font-size:.92rem}
+figure{margin:16px 0} figcaption{color:var(--ink2);font-size:.9rem;margin-top:6px}
+.legend{display:flex;gap:18px;font-size:.88rem;color:var(--ink2);margin:4px 0 6px;flex-wrap:wrap}
+.legend span::before{content:"";display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px;background:var(--c)}
+svg.chart{width:100%;height:auto;display:block}
+svg .grid{stroke:var(--rule);stroke-width:1} svg .axis{stroke:var(--ink3);stroke-width:1}
+svg .tick{fill:var(--ink3);font-size:11px} svg .lab{fill:var(--ink);font-size:12px}
+svg .s1{fill:var(--s1)} svg .s2{fill:var(--s2)} svg .hitbox{fill:transparent}
+svg .hit:hover path,svg .hit:focus path{opacity:.8} svg .hit:focus{outline:none}
+svg.diag .box{fill:var(--panel);stroke:var(--ink3);stroke-width:1.2}
+svg.diag .t{fill:var(--ink);font-size:13px;font-weight:600} svg.diag .s{fill:var(--ink2);font-size:11.5px}
+svg.diag .ln{stroke:var(--ink2);stroke-width:1.5;fill:none} svg.diag .ah{fill:var(--ink2)}
+svg.diag .sep{stroke:var(--rule);stroke-width:1;stroke-dasharray:4 4}
+ol.steps>li{margin:10px 0}
+td.first,th.first{min-width:150px} td.nw{white-space:nowrap} .ch{color:var(--ink3);font-size:.85em;white-space:nowrap}
+</style></head>
+<body><main>
+<h1>GPU Lidar Check</h1>
+<p class="lede">Does Gazebo's GPU lidar put the right points on the cones, and does the whole stack drive on it?</p>
+<p class="meta">5 November 2026 · RTX 5060 Laptop GPU (driver 580.178.04), Intel Raptor Lake iGPU, Ubuntu 22.04 · Docker image
+<code>falcon_autonomy:latest</code> (ROS 2 Humble, Gazebo 11.10.2) · ADS-DV on <code>small_track</code> (71 cones)</p>
+
+<section class="key"><h2>Results</h2><ul>
+<li><b>Gazebo's lidar agrees with the ray-cast.</b> On a driven lap, for all 8 lidar set-ups,
+the two detected exactly the same cones (71 of 71).
+Gazebo's median first-detection range was 0.1–1.1 m shorter, and it put 0.76–0.78× as many points on each cone
+(median over range bands).</li>
+<li><b>The lidar comparison holds.</b> The ray-cast results used to compare lidars match what Gazebo's
+own sensor sees: the ATX first detects cones at about 30 m (the track's limit), 64 channels at about 23 m,
+32 channels at 19–20 m and the VLP-16 at 13 m.</li>
+<li><b>The full stack runs on the GPU.</b> Hesai ATX, plate 0.57 m: lap completed, 0 cones touched, fused cones within 15 m a median 5 cm from the true cone; Ouster OS1-32, post 0.70 m: lap completed, 0 cones touched, fused cones within 15 m a median 3 cm from the true cone</li>
+<li><b>Render on the NVIDIA GPU.</b> Both Intel GPUs tested (this laptop's Raptor Lake and the 8 GB test PC's
+UHD 630) render the 120° ATX correctly but put no points on cones past 5 m with the 360° VLP-16. The RTX gets
+both right. On this laptop OpenGL goes to the Intel GPU unless two PRIME offload variables are set;
+<code>docker/docker_run.sh</code> now sets them.</li>
+<li><b>No ground in Gazebo's cloud.</b> The EUFS ground plane has a collision shape but no visual, and
+<code>gpu_ray</code> sees only visuals, so the cloud holds cones and the car but no ground. A real lidar,
+and Gazebo's CPU <code>ray</code> sensor, return the ground.</li>
+</ul></section>
+
+<h2>How the check works</h2>
+<p>One drive is counted twice. Gazebo's <code>gpu_ray</code> lidar renders the lidar profile's beams on the
+GPU and publishes the cloud on <code>/lidar/points</code>. At the same time, the <code>cone_coverage</code> node
+casts the same beams itself, from the car's true pose, against each cone as an exact frustum. Both count the
+points on every cone in every frame and write a report: <code>&lt;run&gt;/pointcloud/</code> and
+<code>&lt;run&gt;/raycast/</code>. <code>coverage_compare</code> puts the two side by side.</p>
+<figure><svg class="diag" viewBox="0 0 760 250" role="img" aria-labelledby="dg-t"><title id="dg-t">One drive, two counts of the lidar points on each cone</title>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+<rect class="box" x="10" y="85" width="150" height="80" rx="8"/>
+<text class="t" x="85" y="112" text-anchor="middle">Gazebo (EUFS sim)</text>
+<text class="s" x="85" y="132" text-anchor="middle">• car drives a lap</text>
+<text class="s" x="85" y="149" text-anchor="middle">• 71 track cones</text>
+<rect class="box" x="235" y="20" width="200" height="80" rx="8"/>
+<text class="t" x="335" y="46" text-anchor="middle">gpu_ray lidar (GPU)</text>
+<text class="s" x="335" y="66" text-anchor="middle">• renders the profile's beams</text>
+<text class="s" x="335" y="83" text-anchor="middle">• cloud on /lidar/points</text>
+<rect class="box" x="235" y="150" width="200" height="80" rx="8"/>
+<text class="t" x="335" y="176" text-anchor="middle">Ray-cast (numpy)</text>
+<text class="s" x="335" y="196" text-anchor="middle">• same beams, true pose (TF)</text>
+<text class="s" x="335" y="213" text-anchor="middle">• cones as exact frustums</text>
+<line class="sep" x1="200" y1="125" x2="470" y2="125"/>
+<rect class="box" x="510" y="20" width="110" height="80" rx="8"/>
+<text class="t" x="565" y="52" text-anchor="middle">pointcloud/</text>
+<text class="s" x="565" y="72" text-anchor="middle">points per cone</text>
+<rect class="box" x="510" y="150" width="110" height="80" rx="8"/>
+<text class="t" x="565" y="182" text-anchor="middle">raycast/</text>
+<text class="s" x="565" y="202" text-anchor="middle">points per cone</text>
+<rect class="box" x="650" y="85" width="100" height="80" rx="8"/>
+<text class="t" x="700" y="117" text-anchor="middle">coverage_</text>
+<text class="t" x="700" y="134" text-anchor="middle">compare</text>
+<path class="ln" d="M160,110 L235,70" marker-end="url(#ah)"/>
+<path class="ln" d="M160,140 L235,180" marker-end="url(#ah)"/>
+<path class="ln" d="M435,60 L510,60" marker-end="url(#ah)"/>
+<path class="ln" d="M435,190 L510,190" marker-end="url(#ah)"/>
+<path class="ln" d="M620,60 L650,105" marker-end="url(#ah)"/>
+<path class="ln" d="M620,190 L650,145" marker-end="url(#ah)"/>
+</svg><figcaption>One lap, two independent counts of the points on each of the 71 cones.</figcaption></figure>
+<ul>
+<li><b>Same shapes:</b> the ray-cast uses the size of the Gazebo cone meshes (<code>coverage_cone_shape:=eufs</code>:
+small cones 304 mm tall, 160 mm across the base), so both count points on the same cones. The rulebook FS cones
+(325 mm, 228 mm across) are bigger, which is why the lidar comparison uses <code>fs</code>.</li>
+<li><b>Detected</b> means at least 3 points on the cone in one frame, from at least one channel.</li>
+<li><b>Isolated:</b> each container kept ROS on its own machine (<code>ROS_LOCALHOST_ONLY=1</code>). Two simulators
+on one LAN and ROS domain receive each other's clock, TF and clouds, which makes both counts meaningless.</li>
+</ul>
+
+<h2>Parked: one pose, three GPUs</h2>
+<p>The car stands at the start line and the lidar runs for about 30 s. Each cell is the mean number of points on a
+cone in view, per frame, by range from the lidar, with Gazebo / ray-cast below it. Red cells are off by more than
+2.5× either way.</p>
+<h3>Hesai ATX (plate, 0.57 m)</h3>
+<div class="tw"><table><thead><tr><th class="first">Points from</th><th class="num">Cones detected</th><th class="num">Same verdict</th><th class="num">0-5 m</th><th class="num">5-10 m</th><th class="num">10-15 m</th><th class="num">15-20 m</th><th class="num">20-25 m</th><th class="num">25-30 m</th><th class="num">30-40 m</th><th class="num">Real-time factor</th></tr></thead><tbody>
+<tr class="ref"><td class="first">Ray-cast</td><td class="num">43/71</td><td class="num">–</td><td class="num">2266.5</td><td class="num">292.0</td><td class="num">93.5</td><td class="num">48.3</td><td class="num">28.8</td><td class="num">17.0</td><td class="num">13.3</td><td class="num">–</td></tr>
+<tr><td class="first">Gazebo on RTX 5060</td><td class="num">43/71</td><td class="num">71/71</td><td class="num">2568.8<span class="ratio">×1.13</span></td><td class="num">221.7<span class="ratio">×0.76</span></td><td class="num">65.9<span class="ratio">×0.70</span></td><td class="num">38.1<span class="ratio">×0.79</span></td><td class="num">23.6<span class="ratio">×0.82</span></td><td class="num">13.2<span class="ratio">×0.77</span></td><td class="num">10.6<span class="ratio">×0.80</span></td><td class="num">0.90</td></tr>
+<tr><td class="first">Gazebo on Intel Raptor Lake</td><td class="num">43/71</td><td class="num">71/71</td><td class="num">2509.9<span class="ratio">×1.11</span></td><td class="num">208.4<span class="ratio">×0.71</span></td><td class="num">58.5<span class="ratio">×0.63</span></td><td class="num">32.7<span class="ratio">×0.68</span></td><td class="num">19.3<span class="ratio">×0.67</span></td><td class="num">10.1<span class="ratio">×0.59</span></td><td class="num">7.9<span class="ratio">×0.59</span></td><td class="num">0.96</td></tr>
+<tr><td class="first">Gazebo on Intel UHD 630</td><td class="num">43/71</td><td class="num">71/71</td><td class="num">2492.8<span class="ratio">×1.10</span></td><td class="num">205.2<span class="ratio">×0.70</span></td><td class="num">57.6<span class="ratio">×0.62</span></td><td class="num">32.1<span class="ratio">×0.67</span></td><td class="num">19.0<span class="ratio">×0.66</span></td><td class="num">9.9<span class="ratio">×0.58</span></td><td class="num">7.7<span class="ratio">×0.58</span></td><td class="num">0.83</td></tr>
+</tbody></table></div><h3>Velodyne VLP-16 (post, 0.70 m)</h3>
+<div class="tw"><table><thead><tr><th class="first">Points from</th><th class="num">Cones detected</th><th class="num">Same verdict</th><th class="num">0-5 m</th><th class="num">5-10 m</th><th class="num">10-15 m</th><th class="num">15-20 m</th><th class="num">20-25 m</th><th class="num">25-30 m</th><th class="num">30-40 m</th><th class="num">Real-time factor</th></tr></thead><tbody>
+<tr class="ref"><td class="first">Ray-cast</td><td class="num">17/71</td><td class="num">–</td><td class="num">29.4</td><td class="num">3.4</td><td class="num">2.5</td><td class="num">0.0</td><td class="num">0.3</td><td class="num">0.6</td><td class="num">0.8</td><td class="num">–</td></tr>
+<tr><td class="first">Gazebo on RTX 5060</td><td class="num">14/71</td><td class="num">68/71</td><td class="num">26.0<span class="ratio">×0.88</span></td><td class="num">3.1<span class="ratio">×0.91</span></td><td class="num">1.8<span class="ratio">×0.70</span></td><td class="num">0.0<span class="ratio"></span></td><td class="num">0.1<span class="ratio">×0.16</span></td><td class="num">0.4<span class="ratio">×0.63</span></td><td class="num">0.8<span class="ratio">×1.01</span></td><td class="num">1.00</td></tr>
+<tr><td class="first">Gazebo on Intel Raptor Lake</td><td class="num">7/71</td><td class="num">61/71</td><td class="num">14.9<span class="ratio">×0.51</span></td><td class="num bad">0.0<span class="ratio">×0.00</span></td><td class="num bad">0.0<span class="ratio">×0.00</span></td><td class="num">0.0<span class="ratio"></span></td><td class="num">0.0<span class="ratio">×0.00</span></td><td class="num">0.0<span class="ratio">×0.00</span></td><td class="num">0.0<span class="ratio">×0.00</span></td><td class="num">1.00</td></tr>
+<tr><td class="first">Gazebo on Intel UHD 630</td><td class="num">13/71</td><td class="num">67/71</td><td class="num">14.7<span class="ratio">×0.50</span></td><td class="num bad">0.0<span class="ratio">×0.01</span></td><td class="num bad">0.0<span class="ratio">×0.00</span></td><td class="num">0.0<span class="ratio"></span></td><td class="num">0.0<span class="ratio">×0.00</span></td><td class="num">0.0<span class="ratio">×0.00</span></td><td class="num">0.0<span class="ratio">×0.00</span></td><td class="num">0.68</td></tr>
+</tbody></table></div>
+<p class="note">The VLP-16 numbers are small because few of its 16 beams, 2° apart, cross a 0.3 m cone past a few
+metres. On both Intel GPUs, Gazebo's 360° VLP-16 cloud has nothing on the cones past 5 m, while the 120° ATX
+cloud is right; on the RTX both are right. The driven-lap results below are all on the RTX.</p>
+
+<h2>Driven lap: eight lidar set-ups</h2>
+<p>The ADS-DV drives one lap at up to 3 m/s on the simulator's cones, so its path does not depend on the lidar.
+Gazebo's lidar (on the RTX) and the ray-cast count the points on the cones together. The 32- and 64-channel
+lidars sit on a 0.70 m post. The ATX sits on the sensor plate (0.57 m), as in the 2026 CarMaker model.</p>
+<figure><div class="legend"><span style="--c:var(--s1)">Ray-cast</span><span style="--c:var(--s2)">Gazebo gpu_ray</span></div>
+<svg viewBox="0 0 680 336" class="chart" role="img" aria-labelledby="reach-t reach-d"><title id="reach-t">Median first-detection range per lidar</title><desc id="reach-d">For each lidar, two bars: ray-cast and Gazebo median first-detection range in metres. The table below has the same numbers.</desc>
+<line x1="190.0" y1="24" x2="190.0" y2="308" class="grid"/>
+<text x="190.0" y="324" class="tick" text-anchor="middle">0</text>
+<line x1="256.6" y1="24" x2="256.6" y2="308" class="grid"/>
+<text x="256.6" y="324" class="tick" text-anchor="middle">5</text>
+<line x1="323.1" y1="24" x2="323.1" y2="308" class="grid"/>
+<text x="323.1" y="324" class="tick" text-anchor="middle">10</text>
+<line x1="389.7" y1="24" x2="389.7" y2="308" class="grid"/>
+<text x="389.7" y="324" class="tick" text-anchor="middle">15</text>
+<line x1="456.3" y1="24" x2="456.3" y2="308" class="grid"/>
+<text x="456.3" y="324" class="tick" text-anchor="middle">20</text>
+<line x1="522.9" y1="24" x2="522.9" y2="308" class="grid"/>
+<text x="522.9" y="324" class="tick" text-anchor="middle">25</text>
+<line x1="589.4" y1="24" x2="589.4" y2="308" class="grid"/>
+<text x="589.4" y="324" class="tick" text-anchor="middle">30</text>
+<line x1="656.0" y1="24" x2="656.0" y2="308" class="grid"/>
+<text x="656.0" y="324" class="tick" text-anchor="middle">35</text>
+<text x="656" y="336" class="tick" text-anchor="end">metres</text>
+<text x="180" y="43" class="lab" text-anchor="end">Hesai ATX</text>
+<g class="hit" tabindex="0"><title>Hesai ATX – Ray-cast: 30.3 m</title><rect x="190" y="28" width="466" height="13" class="hitbox"/><path d="M190,30 H589.8 Q593.8,30 593.8,34 V35 Q593.8,39 589.8,39 H190 Z" class="s1"/></g>
+<g class="hit" tabindex="0"><title>Hesai ATX – Gazebo: 30.2 m</title><rect x="190" y="39" width="466" height="13" class="hitbox"/><path d="M190,41 H588.2 Q592.2,41 592.2,45 V46 Q592.2,50 588.2,50 H190 Z" class="s2"/></g>
+<text x="180" y="77" class="lab" text-anchor="end">Hesai ATX (2° down)</text>
+<g class="hit" tabindex="0"><title>Hesai ATX (2° down) – Ray-cast: 30.4 m</title><rect x="190" y="62" width="466" height="13" class="hitbox"/><path d="M190,64 H590.1 Q594.1,64 594.1,68 V69 Q594.1,73 590.1,73 H190 Z" class="s1"/></g>
+<g class="hit" tabindex="0"><title>Hesai ATX (2° down) – Gazebo: 30.3 m</title><rect x="190" y="73" width="466" height="13" class="hitbox"/><path d="M190,75 H589.0 Q593.0,75 593.0,79 V80 Q593.0,84 589.0,84 H190 Z" class="s2"/></g>
+<text x="180" y="111" class="lab" text-anchor="end">Velodyne VLP-16</text>
+<g class="hit" tabindex="0"><title>Velodyne VLP-16 – Ray-cast: 13.3 m</title><rect x="190" y="96" width="466" height="13" class="hitbox"/><path d="M190,98 H363.5 Q367.5,98 367.5,102 V103 Q367.5,107 363.5,107 H190 Z" class="s1"/></g>
+<g class="hit" tabindex="0"><title>Velodyne VLP-16 – Gazebo: 12.7 m</title><rect x="190" y="107" width="466" height="13" class="hitbox"/><path d="M190,109 H355.6 Q359.6,109 359.6,113 V114 Q359.6,118 355.6,118 H190 Z" class="s2"/></g>
+<text x="180" y="145" class="lab" text-anchor="end">RoboSense Helios 1615</text>
+<g class="hit" tabindex="0"><title>RoboSense Helios 1615 – Ray-cast: 19.9 m</title><rect x="190" y="130" width="466" height="13" class="hitbox"/><path d="M190,132 H451.1 Q455.1,132 455.1,136 V137 Q455.1,141 451.1,141 H190 Z" class="s1"/></g>
+<g class="hit" tabindex="0"><title>RoboSense Helios 1615 – Gazebo: 18.9 m</title><rect x="190" y="141" width="466" height="13" class="hitbox"/><path d="M190,143 H437.2 Q441.2,143 441.2,147 V148 Q441.2,152 437.2,152 H190 Z" class="s2"/></g>
+<text x="180" y="179" class="lab" text-anchor="end">RoboSense Helios 5515</text>
+<g class="hit" tabindex="0"><title>RoboSense Helios 5515 – Ray-cast: 15.0 m</title><rect x="190" y="164" width="466" height="13" class="hitbox"/><path d="M190,166 H385.7 Q389.7,166 389.7,170 V171 Q389.7,175 385.7,175 H190 Z" class="s1"/></g>
+<g class="hit" tabindex="0"><title>RoboSense Helios 5515 – Gazebo: 14.4 m</title><rect x="190" y="175" width="466" height="13" class="hitbox"/><path d="M190,177 H377.2 Q381.2,177 381.2,181 V182 Q381.2,186 377.2,186 H190 Z" class="s2"/></g>
+<text x="180" y="213" class="lab" text-anchor="end">Hesai XT32</text>
+<g class="hit" tabindex="0"><title>Hesai XT32 – Ray-cast: 20.0 m</title><rect x="190" y="198" width="466" height="13" class="hitbox"/><path d="M190,200 H451.9 Q455.9,200 455.9,204 V205 Q455.9,209 451.9,209 H190 Z" class="s1"/></g>
+<g class="hit" tabindex="0"><title>Hesai XT32 – Gazebo: 19.0 m</title><rect x="190" y="209" width="466" height="13" class="hitbox"/><path d="M190,211 H439.1 Q443.1,211 443.1,215 V216 Q443.1,220 439.1,220 H190 Z" class="s2"/></g>
+<text x="180" y="247" class="lab" text-anchor="end">Ouster OS1-32</text>
+<g class="hit" tabindex="0"><title>Ouster OS1-32 – Ray-cast: 19.5 m</title><rect x="190" y="232" width="466" height="13" class="hitbox"/><path d="M190,234 H445.8 Q449.8,234 449.8,238 V239 Q449.8,243 445.8,243 H190 Z" class="s1"/></g>
+<g class="hit" tabindex="0"><title>Ouster OS1-32 – Gazebo: 18.6 m</title><rect x="190" y="243" width="466" height="13" class="hitbox"/><path d="M190,245 H433.6 Q437.6,245 437.6,249 V250 Q437.6,254 433.6,254 H190 Z" class="s2"/></g>
+<text x="180" y="281" class="lab" text-anchor="end">Ouster OS1-64</text>
+<g class="hit" tabindex="0"><title>Ouster OS1-64 – Ray-cast: 23.7 m</title><rect x="190" y="266" width="466" height="13" class="hitbox"/><path d="M190,268 H501.9 Q505.9,268 505.9,272 V273 Q505.9,277 501.9,277 H190 Z" class="s1"/></g>
+<g class="hit" tabindex="0"><title>Ouster OS1-64 – Gazebo: 22.6 m</title><rect x="190" y="277" width="466" height="13" class="hitbox"/><path d="M190,279 H487.2 Q491.2,279 491.2,283 V284 Q491.2,288 487.2,288 H190 Z" class="s2"/></g>
+<line x1="190" y1="24" x2="190" y2="308" class="axis"/>
+</svg>
+<figcaption>Median range at which a cone is first detected, per lidar. The ATX reaches the far side of the track, so 30 m is the track's limit, not the lidar's.</figcaption></figure>
+<div class="tw"><table><thead><tr><th>Lidar</th><th>Mount</th><th class="num">Cones detected</th><th class="num">First detection, m</th><th class="num">Points on a cone<br>10–15 m</th><th class="num"><br>15–20 m</th><th class="num"><br>20–25 m</th><th class="num">Gazebo<br>points/frame</th></tr></thead><tbody><tr class="ref"><td></td><td></td><td class="num">ray-cast / Gazebo</td><td class="num">ray-cast / Gazebo</td><td class="num">ray-cast / Gazebo</td><td class="num">ray-cast / Gazebo</td><td class="num">ray-cast / Gazebo</td><td></td></tr>
+<tr><td class="nw">Hesai ATX<span class="ratio">256 channels</span></td><td class="nw">plate 0.57 m</td><td class="num">71 / 71</td><td class="num">30.3 / 30.2</td><td class="num">107.4 / 84.4</td><td class="num">52.1 / 39.5</td><td class="num">31.2 / 22.3</td><td class="num">19,074</td></tr>
+<tr><td class="nw">Hesai ATX<span class="ratio">256 channels</span></td><td class="nw">plate 0.57 m, 2° down</td><td class="num">71 / 71</td><td class="num">30.4 / 30.3</td><td class="num">106.6 / 84.6</td><td class="num">52.0 / 39.9</td><td class="num">31.1 / 22.5</td><td class="num">25,695</td></tr>
+<tr><td class="nw">Velodyne VLP-16<span class="ratio">16 channels</span></td><td class="nw">post 0.70 m</td><td class="num">71 / 71</td><td class="num">13.3 / 12.7</td><td class="num">2.0 / 1.6</td><td class="num">0.1 / 0.1</td><td class="num">0.3 / 0.2</td><td class="num">1,168</td></tr>
+<tr><td class="nw">RoboSense Helios 1615<span class="ratio">32 channels</span></td><td class="nw">post 0.70 m</td><td class="num">71 / 71</td><td class="num">19.9 / 18.9</td><td class="num">3.0 / 2.4</td><td class="num">2.0 / 1.5</td><td class="num">0.3 / 0.2</td><td class="num">2,570</td></tr>
+<tr><td class="nw">RoboSense Helios 5515<span class="ratio">32 channels</span></td><td class="nw">post 0.70 m</td><td class="num">71 / 71</td><td class="num">15.0 / 14.4</td><td class="num">2.6 / 2.1</td><td class="num">0.5 / 0.3</td><td class="num">1.1 / 0.9</td><td class="num">15,123</td></tr>
+<tr><td class="nw">Hesai XT32<span class="ratio">32 channels</span></td><td class="nw">post 0.70 m</td><td class="num">71 / 71</td><td class="num">20.0 / 19.0</td><td class="num">3.4 / 2.6</td><td class="num">2.2 / 1.7</td><td class="num">0.3 / 0.2</td><td class="num">2,855</td></tr>
+<tr><td class="nw">Ouster OS1-32<span class="ratio">32 channels</span></td><td class="nw">post 0.70 m</td><td class="num">71 / 71</td><td class="num">19.5 / 18.6</td><td class="num">2.6 / 2.0</td><td class="num">2.1 / 1.6</td><td class="num">0.1 / 0.1</td><td class="num">4,784</td></tr>
+<tr><td class="nw">Ouster OS1-64<span class="ratio">64 channels</span></td><td class="nw">post 0.70 m</td><td class="num">71 / 71</td><td class="num">23.7 / 22.6</td><td class="num">5.4 / 4.2</td><td class="num">2.6 / 2.0</td><td class="num">1.9 / 1.3</td><td class="num">9,273</td></tr>
+</tbody></table></div>
+<p class="note">Points on a cone are the mean per frame while the cone is in view, at that range from the lidar.
+The Helios 5515's channels are dense below the horizon and sparse above, so it first detects the small Gazebo
+cones later (15 m) than the bigger FS cones (29 m, below).</p>
+
+<h2>Full stack on perception</h2>
+<p>Same car, track and lap, but the planner drives on <code>/falcon/fused_cones</code>: YOLO on the camera
+(CUDA on the RTX), depth localisation, the lidar cone detector on Gazebo's cloud, and the fuser. During the
+lap, every cone each stage publishes is moved into the map frame and matched to the nearest cone of the true
+track; "found" is the share of true cones within 10 m ahead (±55°, the camera's half view) with a fused cone
+within 0.5 m. Errors grow with range, so the far detections set the p90.</p>
+<div class="tw"><table><thead><tr><th>Lidar</th><th>Cones from</th><th class="num">Per message</th><th class="num">Median error</th><th class="num">Median error<br>within 15 m</th><th class="num">&gt; 0.5 m off<br>within 15 m</th><th class="num">Real cones ahead<br>found</th></tr></thead><tbody>
+<tr><td rowspan="3" class="nw">Hesai ATX, plate 0.57 m<span class="ratio">lap done, 0 cones touched</span></td><td>lidar detector</td><td class="num">19.3</td><td class="num">1.1 cm</td><td class="num">1.0 cm</td><td class="num">3.4 %</td><td class="num"></td></tr>
+<tr><td>camera (YOLO + depth)</td><td class="num">16.4</td><td class="num">5.4 cm</td><td class="num">4.8 cm</td><td class="num">0.0 %</td><td class="num"></td></tr>
+<tr><td>fused</td><td class="num">20.1</td><td class="num">5.0 cm</td><td class="num">5.4 cm</td><td class="num">3.4 %</td><td class="num">98.0 %</td></tr>
+<tr><td rowspan="3" class="nw">Ouster OS1-32, post 0.70 m<span class="ratio">lap done, 0 cones touched</span></td><td>lidar detector</td><td class="num">21.7</td><td class="num">1.5 cm</td><td class="num">1.4 cm</td><td class="num">0.2 %</td><td class="num"></td></tr>
+<tr><td>camera (YOLO + depth)</td><td class="num">16.4</td><td class="num">5.4 cm</td><td class="num">4.8 cm</td><td class="num">0.0 %</td><td class="num"></td></tr>
+<tr><td>fused</td><td class="num">30.6</td><td class="num">4.2 cm</td><td class="num">3.1 cm</td><td class="num">0.3 %</td><td class="num">99.9 %</td></tr>
+</tbody></table></div>
+
+<h2>What this means for the lidar choice</h2>
+<p>The lidar comparison uses the ray-cast with rulebook FS cones, which Gazebo cannot render (it only has the
+EUFS meshes). The checks above show the ray-cast and Gazebo's lidar agree where both can be run, so these
+FS-cone numbers can be trusted as the geometric limit of each lidar:</p>
+<div class="tw"><table><thead><tr><th>Lidar</th><th>Mount</th><th class="num">Median first detection, m</th>
+<th class="num">Share of frames detected, 10–15 m</th><th class="num">15–20 m</th><th class="num">20–25 m</th></tr></thead>
+<tbody><tr><td>Hesai ATX</td><td>plate 0.57 m</td><td class="num">30.2</td><td class="num">1.00</td><td class="num">1.00</td><td class="num">1.00</td></tr><tr><td>Hesai ATX</td><td>plate 0.57 m, 2° down</td><td class="num">30.2</td><td class="num">1.00</td><td class="num">0.99</td><td class="num">1.00</td></tr><tr><td>Velodyne VLP-16</td><td>post 0.70 m</td><td class="num">13.4</td><td class="num">0.65</td><td class="num">0.00</td><td class="num">0.00</td></tr><tr><td>RoboSense Helios 1615</td><td>post 0.70 m</td><td class="num">20.1</td><td class="num">0.78</td><td class="num">0.84</td><td class="num">0.02</td></tr><tr><td>RoboSense Helios 5515</td><td>post 0.70 m</td><td class="num">29.0</td><td class="num">0.97</td><td class="num">0.03</td><td class="num">0.04</td></tr><tr><td>Hesai XT32</td><td>post 0.70 m</td><td class="num">20.1</td><td class="num">0.87</td><td class="num">0.94</td><td class="num">0.03</td></tr><tr><td>Ouster OS1-32</td><td>post 0.70 m</td><td class="num">19.6</td><td class="num">0.74</td><td class="num">0.88</td><td class="num">0.00</td></tr><tr><td>Ouster OS1-64</td><td>post 0.70 m</td><td class="num">23.9</td><td class="num">1.00</td><td class="num">0.72</td><td class="num">0.71</td></tr></tbody></table></div>
+<p class="note">Ray-cast, FS cones, same lap; from the earlier <code>sweep_example.yaml</code> run. Between 20 and 25 m
+only the ATX and the OS1-64 see a cone in most frames; the 32-channel lidars and the VLP-16 almost never do.</p>
+
+<h2>Run it yourself (and record a video)</h2>
+<ol class="steps">
+<li>On the laptop, in the repo: <code>./docker/docker_run.sh</code>, then inside <code>source /workspace/docker/build.sh</code>.</li>
+<li>Drive one lap with both counters, with Gazebo and RViz open:
+<pre><code>ros2 launch falcon_bringup sim.launch.py lidar:=hesai_atx coverage:=true \
+    coverage_source:=both coverage_cone_shape:=eufs laps:=1</code></pre>
+For another lidar: <code>lidar:=ouster_os1_32 lidar_z:=0.70</code>. For the full stack add <code>cones:=perception</code>.</li>
+<li>Record: in a second terminal on the host, <code>scripts/record_screen.sh</code> (q or Ctrl-C stops; the video goes to
+<code>runs/videos/</code>).</li>
+<li>What to look for in RViz: each cone has two markers, the ray-cast's verdict below and Gazebo's above (green
+detected, orange too few points, red in view but no points, grey never in view). On a sound GPU they turn green
+together as the car drives, and the lidar points sit on the cones.</li>
+<li>Compare: <code>ros2 run falcon_evaluation coverage_compare ~/falcon_runs/&lt;run&gt;</code>. The reports are in
+<code>runs/</code> on the host.</li>
+<li>Perception: with <code>cones:=perception</code>, open a second container shell (<code>./docker/docker_run.sh</code> again)
+and run <code>ros2 run falcon_evaluation perception_check --seconds 60</code> while the car drives.</li>
+<li>All eight set-ups: <code>ros2 run falcon_evaluation lidar_sweep $(ros2 pkg prefix falcon_evaluation)/share/falcon_evaluation/config/sweep_gpu_lidar.yaml</code>,
+then <code>coverage_compare ~/falcon_runs/&lt;sweep&gt;</code>. About 1 minute per set-up on this laptop.</li>
+<li>Check which GPU Gazebo renders on: <code>grep -o 'libGLX_[a-z]*' /proc/$(pgrep -f ^gzserver)/maps | sort -u</code> inside
+the container (<code>libGLX_nvidia</code> = RTX).</li>
+</ol>
+
+<h2>Limits</h2>
+<ul>
+<li>Gazebo adds Gaussian range noise (σ 2 cm, from the lidar profile) but no dropouts, intensity, rain or
+dust, and its cloud has no ground, so the lidar detector's ground filter is not exercised.</li>
+<li>Gazebo put 22–24 % fewer points on each cone than the ray-cast; the detected cones
+and the reach barely changed.</li>
+<li>One track (<code>small_track</code>, 102 m), dry, flat ground, one lap per set-up.</li>
+</ul>
+</main></body></html>

@@ -10,21 +10,31 @@ IMechE ADS-DV (the FS-AI DDT car) or EUFS's own FS car, with a choice of lidar.
 
 The easiest way to build and run the autonomy stack without affecting your local environment is via Docker. The containerized setup will work on Ubuntu 22.04 and higher (not tested on Ubuntu 25.04 though).
 
-**1. Build the Docker container:**
+**1. Build the Docker image (once):**
 ```bash
 ./docker/docker_build.sh
 ```
 
-**2. Run the Docker container:**
+**2. Start the container:**
 ```bash
-./docker/docker_run.sh
+./docker/docker_run.sh       # run it again in another terminal for a second shell
+```
+With an NVIDIA GPU it renders Gazebo, the lidar and RViz on that GPU, also on a laptop
+whose desktop runs on the integrated GPU (`FALCON_GL=mesa ./docker/docker_run.sh` uses the
+integrated one instead). `falcon_ws/src` is mounted from the host, `runs/` collects the
+reports, and the build is kept between containers.
+
+**3. Build the Falcon packages (first time, and after changing code):**
+```bash
+source /workspace/docker/build.sh
 ```
 
-**3. Run the autonomy script (inside the container):**
+**4. Run (inside the container):**
 ```bash
-ros2 launch falcon_bringup autonomy.launch.py
+ros2 launch falcon_bringup sim.launch.py                        # ADS-DV + Hesai ATX, autonomy
+ros2 launch falcon_bringup sim.launch.py cones:=perception      # full stack: YOLO + lidar
 ```
-This will launch the Gazebo simulation and the complete autonomous stack (perception, mapping, planning, control).
+More below in "Run the simulation".
 
 ## Local Build & Setup
 
@@ -35,9 +45,6 @@ source scripts/setup_falcon.sh           # Incremental build + setup (picks up n
 source scripts/setup_falcon.sh --clean   # Full clean rebuild
 source scripts/setup_falcon.sh --setup   # Setup only, no build (new terminal)
 ```
-
-Or in Docker: `docker/docker_build.sh`, then `docker/docker_run.sh` (mounts `falcon_ws/src`,
-and `runs/` for coverage reports).
 
 ## Run the simulation: one command
 
@@ -67,7 +74,7 @@ ros2 launch falcon_bringup sim.launch.py --show-args           # every argument
 | `lidar_sensor_type` | `gpu_ray` | `ray` raycasts on the CPU: exact but slow (see Troubleshooting) |
 | `lidar_h_samples` | profile | fewer columns per frame, for a slow PC |
 | `coverage` | `false` | run the cone coverage metric (below) |
-| `coverage_source` | `raycast` | `raycast` (exact rays from the true pose) or `pointcloud` (Gazebo's lidar) |
+| `coverage_source` | `raycast` | `raycast` (exact rays from the true pose), `pointcloud` (Gazebo's lidar) or `both` |
 | `gazebo_gui`, `rviz` | `true` | |
 
 Mount convention: `x` is metres ahead of the middle of the wheelbase, `z` metres above
@@ -143,9 +150,12 @@ How the returns are counted (`coverage_source:=`):
   faster). Against Gazebo's exact CPU `ray` sensor on the EUFS meshes it gave the same
   detected / not-detected answer for 39 of 44 cones in view, with about 1.5× more
   points per cone because the meshes are faceted and the frustums smooth.
-- `pointcloud`: counts the points of Gazebo's `/lidar/points`. Use it to check the
-  simulated sensor itself, on a machine where Gazebo's lidar renders correctly (see
-  Troubleshooting).
+- `pointcloud`: counts the points of Gazebo's `/lidar/points` (needs the Gazebo
+  lidar, and only has the Gazebo cone meshes). Use it to check the simulated sensor
+  itself (see "Check Gazebo's lidar on your GPU").
+- `both`: the two side by side on the same drive, reports in `<run>/raycast` and
+  `<run>/pointcloud`; `ros2 run falcon_evaluation coverage_compare <run>` puts them
+  next to each other.
 
 The report:
 
@@ -177,6 +187,50 @@ driving on the simulator's cones so the path does not depend on the lidar under 
 and writes `sweep_summary.csv` / `.md` with one row per run. A sweep file lists runs and/or a grid of any `sim.launch.py`
 arguments, e.g. `grid: {lidar: [ouster_os1_32, robosense_helios_1615], lidar_z: [0.57, 0.70], lidar_pitch_deg: [0, 2]}`.
 `--dry-run` prints the commands; `--table <dir>` re-tabulates finished runs.
+
+## Check Gazebo's lidar on your GPU (and record it)
+
+Gazebo's `gpu_ray` lidar renders the scene with OpenGL, so how good its cloud is depends
+on the GPU and driver. `coverage_source:=both` counts Gazebo's points and the ray-cast's
+on the same cones in the same drive; if they agree, `/lidar/points` (and so
+`cones:=perception`) can be trusted on that machine. Results for the RTX 5060 laptop
+and two Intel GPUs are in `docs/gpu_lidar_check.html`.
+
+1. On the host, start the container and build (see Quick Start), then drive one lap
+   with both counters, with Gazebo and RViz open:
+   ```bash
+   ros2 launch falcon_bringup sim.launch.py lidar:=hesai_atx coverage:=true \
+       coverage_source:=both coverage_cone_shape:=eufs laps:=1
+   ```
+   `coverage_cone_shape:=eufs` sizes the ray-cast's cones like the Gazebo meshes, so the
+   two count points on the same shapes.
+2. To film it, in a second host terminal: `scripts/record_screen.sh` (q or Ctrl-C stops;
+   the video goes to `runs/videos/`). In RViz each cone gets two markers: the lower is
+   the ray-cast's verdict, the upper Gazebo's (green detected, orange too few points,
+   red in view but no points, grey never in view). On a sound GPU both turn green
+   together as the car drives and the lidar points sit on the cones.
+3. After the lap (or any time: `ros2 service call /coverage/write_report
+   std_srvs/srv/Trigger` and `/coverage/pointcloud/write_report`), compare:
+   ```bash
+   ros2 run falcon_evaluation coverage_compare ~/falcon_runs/<run>
+   ```
+   Same detected cones, and a Gazebo / ray-cast points ratio near 1 at every range,
+   mean the GPU renders the lidar correctly. Near cones with almost no points, or far
+   cones with several times too many, mean it does not.
+
+To check the whole perception stack on that lidar, add `cones:=perception` to the launch
+and, in a second container shell (`./docker/docker_run.sh` again), run
+`ros2 run falcon_evaluation perception_check --seconds 60` while the car drives: it
+prints how far the lidar, camera and fused cones are from the real ones, and how many
+of the real cones ahead the fused output found.
+
+For every lidar at once: `ros2 run falcon_evaluation lidar_sweep
+$(ros2 pkg prefix falcon_evaluation)/share/falcon_evaluation/config/sweep_gpu_lidar.yaml`,
+then `coverage_compare ~/falcon_runs/<sweep>`.
+
+The EUFS ground plane has no visual, only a collision shape, so `gpu_ray` gets no
+ground returns on any GPU (the CPU `ray` sensor and a real lidar do). The lidar cone
+detector does not need them.
 
 ## Teleop
 
@@ -299,18 +353,35 @@ the URDF (`base_footprint` is on the ground under the middle of the wheelbase).
 
 ### Gazebo's lidar returns too few points
 
-Check before trusting `/lidar/points` (e.g. for `cones:=perception` or
-`coverage_source:=pointcloud`): with the car parked, a VLP-16 at 0.70 m should give
-about 15,000 points a frame, with all 8 downward rings complete
-(`ros2 topic echo --once --field width /lidar/points`).
+`gpu_ray` only sees visual meshes and the EUFS ground plane has none, so a frame holds
+cone and car points but no ground: about 29,000 points for the parked ATX, not the
+~157,000 a real one would return. Check the cones instead, with `coverage_source:=both`
+(see "Check Gazebo's lidar on your GPU"). Tested (`docs/gpu_lidar_check.html`):
 
-On the test machine (Intel UHD 630 through Mesa, NVIDIA driver not loaded) the
-`gpu_ray` sensor returned only a fraction of that: 947 of ~15,000 for the VLP-16,
-almost no ground and nothing past 5 m, and about a tenth of the expected returns for
-the ATX. The CPU `ray` sensor (`lidar_sensor_type:=ray`) was exact but ran at 0.17×
-real time with the VLP-16 and ran out of memory (3.7 GB) with the ATX. Whether
-`gpu_ray` is right on an NVIDIA GPU was not tested. This is why coverage defaults to
-the ray-cast, which does not depend on Gazebo's lidar.
+| GPU | Hesai ATX (120°) | VLP-16 (360°) |
+|---|---|---|
+| RTX 5060 Laptop (NVIDIA) | right: same cones, ~0.75-0.8× the ray-cast's points | right |
+| Intel Raptor Lake, Intel UHD 630 (Mesa) | right | wrong: no points on cones past 5 m |
+
+So render on an NVIDIA GPU for the 360° lidars, or use the ray-cast.
+
+- **Which GPU renders.** In the container, `glxinfo` is not installed; look at what
+  gzserver loaded instead: `grep -o 'libGLX_[a-z]*' /proc/$(pgrep -f ^gzserver)/maps | sort -u`
+  (`libGLX_nvidia` = NVIDIA, `libGLX_mesa` = integrated). `docker/docker_run.sh` sets
+  `NVIDIA_DRIVER_CAPABILITIES=all`, `__NV_PRIME_RENDER_OFFLOAD=1` and
+  `__GLX_VENDOR_LIBRARY_NAME=nvidia` for this; without them a laptop renders on its
+  integrated GPU even with `--gpus all`.
+- **Another simulator on the network** gives clouds and poses from two cars and wildly
+  wrong counts: see "Two simulators see each other".
+- The CPU `ray` sensor (`lidar_sensor_type:=ray`) sees the ground too, but ran at 0.17×
+  real time with the VLP-16 and ran out of memory (3.7 GB) with the ATX on an 8 GB PC.
+
+### Two simulators see each other
+
+The container uses the host network. `docker_run.sh` keeps ROS on the machine
+(`ROS_LOCALHOST_ONLY=1`); with `ROS_LOCALHOST_ONLY=0`, two machines on one LAN and ROS
+domain running the sim receive each other's `/clock`, TF and sensors ("Detected jump
+back in time", false laps). Give each its own `ROS_DOMAIN_ID` then.
 
 ### The sim runs slowly
 
