@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<!--
+  EUFS Gazebo plugins for the Falcon car: the vehicle model and the ground-truth /
+  simulated cones.  Copied from eufs_plugins/urdf/eufs_plugins.gazebo.xacro with two
+  changes:
+    * the simulated cones' (/cones) lidar and camera view follow the sensors chosen
+      for the run instead of a fixed 180 deg / 120 deg;
+    * the two fixed-pose camera-cone plugins and the bounding-box plugin are left out
+      (nothing in Falcon reads them, and the bounding boxes ran at 50 Hz).
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <gazebo>
+    <plugin name="race_car" filename="libgazebo_race_car_model.so">
+      <update_rate>1000.0</update_rate>
+      <publish_rate>200.0</publish_rate>
+      <vehicle_model>$(arg vehicle_model)</vehicle_model>
+      <front_left_wheel_steering>left_steering_hinge_joint</front_left_wheel_steering>
+      <front_right_wheel_steering>right_steering_hinge_joint</front_right_wheel_steering>
+      <front_left_wheel>front_left_wheel_joint</front_left_wheel>
+      <front_right_wheel>front_right_wheel_joint</front_right_wheel>
+      <rear_left_wheel>rear_left_wheel_joint</rear_left_wheel>
+      <rear_right_wheel>rear_right_wheel_joint</rear_right_wheel>
+      <yaml_config>$(arg config_file)</yaml_config>
+      <noise_config>$(arg noise_config)</noise_config>
+      <referenceFrame>map</referenceFrame>
+      <robotFrame>base_footprint</robotFrame>
+      <publishTransform>$(arg publish_tf)</publishTransform>
+      <groundTruthCarStateTopic>/ground_truth/state</groundTruthCarStateTopic>
+      <localisationCarStateTopic>/odometry_integration/car_state</localisationCarStateTopic>
+      <wheelSpeedsTopicName>/ros_can/wheel_speeds</wheelSpeedsTopicName>
+      <groundTruthWheelSpeedsTopicName>/ground_truth/wheel_speeds</groundTruthWheelSpeedsTopicName>
+      <odometryTopicName>/ground_truth/odom</odometryTopicName>
+      <commandMode>$(arg command_mode)</commandMode>
+      <controlDelay>0.2</controlDelay>
+      <steeringLockTime>1</steeringLockTime>
+      <pubGroundTruth>$(arg pub_ground_truth)</pubGroundTruth>
+    </plugin>
+  </gazebo>
+
+  <gazebo>
+    <plugin name="gz_ground_truth_cones" filename="libgazebo_ground_truth_cones.so">
+      <alwaysOn>true</alwaysOn>
+      <updateRate>25.0</updateRate>
+      <cameraViewDistance>$(arg sim_camera_range)</cameraViewDistance>
+      <lidarViewDistance>100</lidarViewDistance>
+      <lidarXViewDistance>$(arg sim_lidar_range)</lidarXViewDistance>
+      <lidarYViewDistance>$(arg sim_lidar_range)</lidarYViewDistance>
+      <lidarMinViewDistance>1</lidarMinViewDistance>
+      <cameraFOV>$(arg sim_camera_fov)</cameraFOV>
+      <cameraMinViewDistance>0.5</cameraMinViewDistance>
+      <lidarFOV>$(arg sim_lidar_fov)</lidarFOV>
+      <lidarOn>true</lidarOn>
+      <trackFrame>map</trackFrame>
+      <recolor_config>$(arg recolor_config)</recolor_config>
+      <groundTruthConesTopicName>/ground_truth/cones</groundTruthConesTopicName>
+      <groundTruthTrackTopicName>/ground_truth/track</groundTruthTrackTopicName>
+      <simulatePerception>$(arg simulate_perception)</simulatePerception>
+      <perceptionConesTopicName>/cones</perceptionConesTopicName>
+      <perceptionCameraDepthNoiseParameterA>0.01</perceptionCameraDepthNoiseParameterA>
+      <perceptionCameraDepthNoiseParameterB>0.5</perceptionCameraDepthNoiseParameterB>
+      <perceptionLidarNoise>0.03 0.03 0.0</perceptionLidarNoise>
+      <pubGroundTruth>$(arg pub_ground_truth)</pubGroundTruth>
+    </plugin>
+  </gazebo>
+
+</robot>

@@ -2,10 +2,16 @@ pure_pursuit_node:
   ros__parameters:
     path_topic: "/planning/path"
     cmd_topic: "/cmd"
-    lookahead_marker_topic: "/planning/lookahead_marker"
-    lookahead_distance: 3
-    wheelbase: 1.58
-    target_speed: 3.0
-    max_steering_angle: 0.52
+    base_frame: "base_footprint"
+
+    lookahead_distance: 2.5      # minimum lookahead (m)
+    lookahead_gain: 0.6          # lookahead = max(lookahead_distance, gain * speed)
+    target_speed: 3.0            # m/s
+    min_speed: 1.0               # m/s, slowest the curvature limit goes
+    max_lateral_accel: 3.0       # m/s^2 on the path ahead; 0 disables the curve limit
+    path_timeout_sec: 0.5        # stop if no path within this (ROS / sim time)
     control_rate_hz: 20.0
-    path_timeout_sec: 0.2
+    # wheelbase and max_steering_angle come from the vehicle profile when launched
+    # from falcon_bringup/sim.launch.py; these are the ADS-DV values.
+    wheelbase: 1.53
+    max_steering_angle: 0.3665

@@ -1,0 +1,87 @@
+<?xml version="1.0"?>
+<!--
+  Falcon car for eufs_sim: the EUFS chassis, wheels and vehicle-model plugin, with the
+  camera, IMU and GPS placed from a falcon_description vehicle profile.  The lidar is
+  added by falcon_description/urdf_builder.py (one Gazebo ray sensor per evenly
+  spaced run of channels), so it is not in this file.
+
+  Every number arrives as a xacro arg from urdf_builder.py; nothing here is
+  vehicle-specific.  Sensor poses arrive already converted to the chassis link,
+  which EUFS puts wheel_diameter / 2 above base_footprint.
+-->
+<robot name="falcon" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- EUFS vehicle model + plugins -->
+  <xacro:arg name="config_file" default=""/>
+  <xacro:arg name="noise_config" default=""/>
+  <xacro:arg name="recolor_config" default=""/>
+  <xacro:arg name="vehicle_model" default="DynamicBicycle"/>
+  <xacro:arg name="command_mode" default="velocity"/>
+  <xacro:arg name="publish_tf" default="true"/>
+  <xacro:arg name="pub_ground_truth" default="true"/>
+  <xacro:arg name="simulate_perception" default="true"/>
+
+  <!-- Body -->
+  <xacro:arg name="chassis_mesh" default="ads_dv_chassis.dae"/>
+  <xacro:arg name="wheelbase" default="1.53"/>
+  <xacro:arg name="track" default="1.2"/>
+
+  <!-- Simulated cones (/cones): view of the lidar and camera they stand in for -->
+  <xacro:arg name="sim_lidar_fov" default="3.1416"/>
+  <xacro:arg name="sim_lidar_range" default="20.0"/>
+  <xacro:arg name="sim_camera_fov" default="1.92"/>
+  <xacro:arg name="sim_camera_range" default="15.0"/>
+
+  <!-- Camera (RGB + depth, ZED-style topics /zed/image_raw, /zed/depth/image_raw) -->
+  <xacro:arg name="camera_enabled" default="true"/>
+  <xacro:arg name="camera_xyz" default="0.375 0 0.62"/>
+  <xacro:arg name="camera_rpy" default="0 0.2618 0"/>
+  <xacro:arg name="camera_hfov" default="1.92"/>
+  <xacro:arg name="camera_width" default="1280"/>
+  <xacro:arg name="camera_height" default="720"/>
+  <xacro:arg name="camera_rate" default="15"/>
+
+  <!-- Teleop chase camera (/teleop_camera/image_raw) -->
+  <xacro:arg name="teleop_camera_enabled" default="false"/>
+  <xacro:arg name="teleop_camera_xyz" default="-4 0 2"/>
+  <xacro:arg name="teleop_camera_rpy" default="0 0.244 0"/>
+
+  <xacro:arg name="imu_xyz" default="0 0 0.2525"/>
+  <xacro:arg name="gps_xyz" default="0 0 0.5"/>
+
+  <xacro:property name="config" value="${xacro.load_yaml('$(arg config_file)')}"/>
+  <xacro:property name="PI" value="3.1415926535897931"/>
+  <xacro:property name="M_PI" value="3.1415926535897931"/>
+
+  <xacro:include filename="$(find eufs_racecar)/urdf/wheels.urdf.xacro"/>
+  <xacro:include filename="$(find eufs_racecar)/urdf/eufs_base.urdf.xacro"/>
+  <xacro:include filename="$(find eufs_sensors)/urdf/imu.urdf.xacro"/>
+  <xacro:include filename="$(find eufs_sensors)/urdf/gps.urdf.xacro"/>
+  <xacro:include filename="$(find falcon_description)/urdf/falcon_plugins.gazebo.xacro"/>
+  <xacro:include filename="$(find falcon_description)/urdf/camera.urdf.xacro"/>
+
+  <xacro:eufs_base chassis_mesh="file://$(find eufs_racecar)/meshes/$(arg chassis_mesh)"/>
+  <!-- wheels.urdf.xacro places the wheel centres (chassis_width - 0.2) / 2 out -->
+  <xacro:wheels chassis_width="${$(arg track) + 0.2}" wheelbase="$(arg wheelbase)"/>
+
+  <xacro:sensor_imu parent="chassis" prefix="imu" topic_prefix="">
+    <origin xyz="$(arg imu_xyz)" rpy="0 0 0"/>
+  </xacro:sensor_imu>
+
+  <xacro:sensor_gps parent="chassis" prefix="gps">
+    <origin xyz="$(arg gps_xyz)" rpy="0 0 0"/>
+  </xacro:sensor_gps>
+
+  <xacro:if value="$(arg camera_enabled)">
+    <xacro:falcon_camera prefix="zed" parent="chassis"
+                         xyz="$(arg camera_xyz)" rpy="$(arg camera_rpy)"
+                         hfov="$(arg camera_hfov)" width="$(arg camera_width)"
+                         height="$(arg camera_height)" rate="$(arg camera_rate)"/>
+  </xacro:if>
+
+  <xacro:if value="$(arg teleop_camera_enabled)">
+    <xacro:falcon_teleop_camera parent="chassis"
+                                xyz="$(arg teleop_camera_xyz)" rpy="$(arg teleop_camera_rpy)"/>
+  </xacro:if>
+
+</robot>

@@ -15,6 +15,8 @@ install(PROGRAMS
   scripts/cone_depth_localizer.py
   scripts/lidar_cone_detector.py
   scripts/cone_fuser.py
+  scripts/lidar_cone_detector_3d.py
+  scripts/lidar_merger.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

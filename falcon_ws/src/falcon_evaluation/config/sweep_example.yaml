@@ -1,0 +1,20 @@
+# Example lidar sweep: the same lap on the ADS-DV with each lidar set-up.
+#   ros2 run falcon_evaluation lidar_sweep $(ros2 pkg prefix falcon_evaluation)/share/falcon_evaluation/config/sweep_example.yaml
+# Any falcon_bringup sim.launch.py argument works here.
+common:
+  vehicle: ads_dv
+  track: small_track
+  laps: 1
+  target_speed: 3.0
+
+runs:
+  # 120 deg solid-state on the sensor plate (0.57 m, CarMaker 2026 lidar height)
+  - {name: atx_plate_level, lidar: hesai_atx}
+  - {name: atx_plate_pitch2, lidar: hesai_atx, lidar_pitch_deg: 2.0}
+  # the owned VLP-16 on a short post above the plate (0.70 m)
+  - {name: vlp16_post, lidar: velodyne_vlp16, lidar_z: 0.70}
+
+# 32- and 64-channel spinning lidars on the same post
+grid:
+  lidar: [robosense_helios_1615, robosense_helios_5515, hesai_xt32, ouster_os1_32, ouster_os1_64]
+  lidar_z: [0.70]

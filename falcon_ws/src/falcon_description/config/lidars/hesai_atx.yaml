@@ -1,0 +1,13 @@
+# Hesai ATX, 120 deg semi-solid-state lidar.
+# 120 x 20 deg, 256 channels, 0.08 deg horizontal, 3.84 M points/s = 256 x 1500 rays at
+# 10 Hz (hesaitech.com/product/atx).  The real unit packs channels closer near the
+# middle (0.05 deg at the finest); like lidar_coverage_and_hairpins.html this spreads
+# them evenly over +-10 deg (0.078 deg).
+name: Hesai ATX
+kind: solid_state
+rate_hz: 10
+horizontal: {fov_deg: 120, samples: 1500}
+vertical:
+  uniform: {min_deg: -10.0, max_deg: 10.0, channels: 256}
+range: {min_m: 0.3, max_m: 100.0}   # cones past 100 m do not matter here
+noise_stddev_m: 0.02

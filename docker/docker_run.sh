@@ -23,6 +23,9 @@ else
     GPU_ARGS=""
 fi
 
+# Coverage reports and sweeps (cone_coverage writes to ~/falcon_runs = /root/falcon_runs)
+mkdir -p "${WS_ROOT}/runs"
+
 echo "[docker_run] Starting Falcon Autonomy Container..."
 docker run -it \
     --net host \
@@ -33,6 +36,7 @@ docker run -it \
     --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
     ${GPU_ARGS} \
     --volume="${WS_ROOT}/falcon_ws/src:/workspace/falcon_ws/src:rw" \
+    --volume="${WS_ROOT}/runs:/root/falcon_runs:rw" \
     --workdir="/workspace" \
     --name falcon_container \
     --entrypoint /ros_entrypoint.sh \

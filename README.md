@@ -1,6 +1,8 @@
 # falcon_autonomy
 
-Formula Student Driverless stack: ZED1 + 2D LiDAR, cone-based mapping.
+Formula Student Driverless stack on the EUFS Gazebo simulator: cone perception
+(camera + lidar), a cone map, a centreline planner and pure pursuit. It runs on the
+IMechE ADS-DV (the FS-AI DDT car) or EUFS's own FS car, with a choice of lidar.
 
 **ROS 2 Humble.**
 
@@ -34,367 +36,284 @@ source scripts/setup_falcon.sh --clean   # Full clean rebuild
 source scripts/setup_falcon.sh --setup   # Setup only, no build (new terminal)
 ```
 
-Always use `setup_falcon.sh` (not only `install/setup.bash`)—it sets `EUFS_MASTER` and creates an `install/eufs_plugins` symlink required for Gazebo plugin loading with merge-install.
+Or in Docker: `docker/docker_build.sh`, then `docker/docker_run.sh` (mounts `falcon_ws/src`,
+and `runs/` for coverage reports).
 
-## Run Simulation (EUFS Gazebo)
-
-```bash
-source scripts/setup_falcon.sh
-ros2 launch falcon_bringup simulation.launch.py
-```
-
-Defaults: small track, ads-dv robot, velocity control, dry track, ground truth TFs, Gazebo GUI, RViz, RQT steering. Override with `gazebo_gui:=false` or `rviz:=false` if needed.
-
-### Simulated vs real perception
-
-| Command | Cones | Lidar | Cameras |
-|---------|-------|-------|---------|
-| `ros2 launch falcon_bringup simulation.launch.py` | `/cones` (simulated) | Off | Off |
-| `ros2 launch falcon_bringup simulation.launch.py launch_group:=default` | None from plugin | `/gazebo_scan` | Images on |
-
-Use `launch_group:=no_perception` (default) for simulated cones; use `launch_group:=default` for real lidar and cameras.
-
-### If gzserver exits with code 255
-
-1. **Use `setup_falcon.sh`** so `EUFS_MASTER` and `install/eufs_plugins` are correct:
-   ```bash
-   source scripts/setup_falcon.sh   # from repo root, not only install/setup.bash
-   ```
-
-2. **Permission issues**: If Gazebo or build was run with `sudo`, fix ownership:
-   ```bash
-   sudo chown -R $USER:$USER ~/.gazebo ~/.ros
-   sudo chown -R $USER:$USER falcon_ws/install   # if install is root-owned
-   ```
-
-3. **GPU/graphics**: Try headless first:
-   ```bash
-   ros2 launch falcon_bringup simulation.launch.py gazebo_gui:=false
-   ```
-   If that works, the issue is likely GUI/GPU-related.
-
-4. **Capture the real error**: Run gzserver manually to see the crash reason:
-   ```bash
-   source scripts/setup_falcon.sh
-   export GAZEBO_MODEL_PATH="$EUFS_MASTER/install/share/eufs_tracks/models"
-   export GAZEBO_RESOURCE_PATH="$EUFS_MASTER/install/share/eufs_tracks/meshes:$EUFS_MASTER/install/share/eufs_tracks/materials:$EUFS_MASTER/install/share/eufs_racecar/meshes:$EUFS_MASTER/install/share/eufs_racecar/materials:/usr/share/gazebo-11"
-   export GAZEBO_PLUGIN_PATH="/opt/ros/humble/lib:$EUFS_MASTER/install/eufs_plugins"
-   gzserver --verbose "$EUFS_MASTER/install/share/eufs_tracks/worlds/small_track.world" -s libgazebo_ros_init.so -s libgazebo_ros_factory.so -s libgazebo_ros_force_system.so
-   ```
-
-### Keyboard teleop
-
-Instead of the EUFS dial-based steering GUI, use game-style keyboard teleop with front camera view:
+## Run the simulation: one command
 
 ```bash
-# In a separate terminal, after simulation is running:
-ros2 launch falcon_teleop teleop.launch.py
+ros2 launch falcon_bringup sim.launch.py                       # ADS-DV + Hesai ATX, autonomy
+ros2 launch falcon_bringup sim.launch.py vehicle:=eufs         # EUFS's FS car instead
+ros2 launch falcon_bringup sim.launch.py lidar:=ouster_os1_32 lidar_z:=0.70
+ros2 launch falcon_bringup sim.launch.py mode:=teleop          # drive it yourself
+ros2 launch falcon_bringup sim.launch.py mode:=both            # autonomy, W/A/S/D take over
+ros2 launch falcon_bringup sim.launch.py cones:=perception     # drive on YOLO + lidar fusion
+ros2 launch falcon_bringup sim.launch.py track:=comp_2021 laps:=2 target_speed:=3
+ros2 launch falcon_bringup sim.launch.py --show-args           # every argument
 ```
 
-Controls: **W** forward, **S** brake, **A/D** steer, **R/F** speed +/-, **Space** stop. Teleop automatically enables Manual Drive (retries until sim is ready). See `falcon_teleop/README.md`.
-
-## Simulated Perception
-
-The EUFS simulation includes a dummy cone publisher that mimics a typical perception stack (lidar + camera fusion with noise and color misclassification).
-
-**Topic:** `/cones`  
-**Message type:** `eufs_msgs/msg/ConeArrayWithCovariance`
-
-To receive simulated cone detections, subscribe to `/cones`:
-
-```bash
-ros2 topic echo /cones
-```
-
-
-**Message layout:** Cones are grouped by color: `blue_cones`, `yellow_cones`, `orange_cones`, `big_orange_cones`, `unknown_color_cones`. Each cone has a `geometry_msgs/Point` and `float64[4]` covariance. The header `frame_id` is `base_footprint`.
-
-
-```bash
-std_msgs/Header header
-	builtin_interfaces/Time stamp
-		int32 sec
-		uint32 nanosec
-	string frame_id
-
-ConeWithCovariance[] blue_cones
-	geometry_msgs/Point point
-		float64 x
-		float64 y
-		float64 z
-	float64[4] covariance
-ConeWithCovariance[] yellow_cones
-	geometry_msgs/Point point
-		float64 x
-		float64 y
-		float64 z
-	float64[4] covariance
-ConeWithCovariance[] orange_cones
-	geometry_msgs/Point point
-		float64 x
-		float64 y
-		float64 z
-	float64[4] covariance
-ConeWithCovariance[] big_orange_cones
-	geometry_msgs/Point point
-		float64 x
-		float64 y
-		float64 z
-	float64[4] covariance
-ConeWithCovariance[] unknown_color_cones
-	geometry_msgs/Point point
-		float64 x
-		float64 y
-		float64 z
-	float64[4] covariance
-```
-
-**Enable/disable:** Simulated perception is on when launching with `launch_group:=no_perception` (default in `simulation.launch.py`). That runs without real lidar/camera and publishes cones to `/cones`.
-
-### Simulated perception behaviour
-
-| Question | Answer |
-|----------|--------|
-| All cones or only in-FOV? | **Only cones in sensor FOV** – not the full track |
-| Vehicle has lidar? | ads-dv URDF includes RPLidar A1, but when simulated perception is on it is **disabled** – no `/gazebo_scan` |
-| Front-only or 360°? | **Front-only** – lidar 180°, camera 120°; no rear cones |
-
-The plugin simulates lidar + camera fusion: cones seen by lidar but not camera → `unknown_color_cones`; cones in camera FOV → known color. FOV is a semicircle in front (x forward, y left).
-
-### Sensor layout (ads-dv)
-
-When simulated perception is **off** (real sensors), the lidar publishes to `/gazebo_scan`. With simulated perception **on**, the lidar and camera plugins are disabled (to save compute); cone data comes from `/cones` instead. Any `/scan` you see may be from another node (e.g. RViz display config) or a different world model.
-
-**Mount positions** (xyz in metres, chassis frame; x=forward, y=left, z=up):
-
-| Sensor | Position (x, y, z) | Notes |
-|--------|--------------------|-------|
-| RPLidar A1 | 0.443, 0.0, 0.3 | Front, on chassis centreline |
-| ZED stereo camera | 0.334, 0.0, 0.295 | Slightly behind lidar |
-| IMU | 0.0, 0.0, 0.0 | Chassis origin |
-| GPS | 0.463, 0.068, 0.224 | Right of centre |
-
-## Vehicle pose (simulation)
-
-EUFS publishes vehicle pose, so you can run planning/control without a localization node in sim.
-
-| Topic | Type | Description |
-|-------|------|--------------|
-| `/ground_truth/state` | `eufs_msgs/CarState` | **Perfect pose** (position, orientation, velocities, no noise) |
-| `/ground_truth/odom` | `nav_msgs/Odometry` | Noisy odometry (simulates real odom) |
-| TF `map` → `base_footprint` | — | Pose transform (uses noisy state when `publish_gt_tf:=true`) |
-
-For a known pose without localization, subscribe to `/ground_truth/state`. The TF and odom are deliberately noisy for more realistic behaviour.
-
-## Autonomous Driving (Simulation)
-
-There are two autonomy launch files — one uses ground-truth cones from the simulator, the other uses the real perception stack (YOLO + LiDAR).
-
-### Option A: Ground-truth dev mode (no perception)
-
-Uses EUFS simulated `/cones` (pseudo-perception) with the planning launch file directly:
-
-## Map Builder
-
-```bash
-source scripts/setup_falcon.sh
-ros2 launch falcon_bringup simulation.launch.py launch_group:=no_perception
-ros2 launch falcon_cone_map_builder cone_map_builder.launch.py use_ground_truth:=true
-ros2 launch falcon_teleop teleop.launch.py
-```
-
-## Path Planner
-
-```bash
-source scripts/setup_falcon.sh
-ros2 launch falcon_bringup simulation.launch.py launch_group:=no_perception
-ros2 launch falcon_planning planning.launch.py use_ground_truth:=true totla_laps:=3
-```
-Default lap count is 0 and parsed as infinite
-
-### Option B: Full Autonomy with Real Perception (Recommended)
-
-Uses YOLO camera detection + LiDAR clustering + sensor fusion. The simulator provides raw camera images and LiDAR scans instead of pre-computed cone positions:
-
-```bash
-source scripts/setup_falcon.sh
-ros2 launch falcon_bringup autonomy.launch.py
-```
-
-Drive 5 laps then stop:
-
-```bash
-ros2 launch falcon_bringup autonomy.launch.py total_laps:=5
-```
-
-Override other arguments:
-
-```bash
-ros2 launch falcon_bringup autonomy.launch.py total_laps:=3 gazebo_gui:=false rviz:=true
-```
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `total_laps` | `0` | Number of laps to drive (0 = unlimited) |
-| `gazebo_gui` | `true` | Show Gazebo 3D window |
-| `rviz` | `true` | Launch RViz |
-| `launch_group` | `default` | EUFS sensor group (`default` = cameras + LiDAR) |
-
-### Architecture (perception mode)
-
-```
-EUFS Gazebo (cameras + LiDAR)
-  │
-  ├─ /zed/image_raw ──→ YOLO ──→ /yolo/detections
-  │                                    │
-  ├─ /zed/depth/image_raw ──→ cone_depth_localizer ──→ /falcon/camera_cones
-  │                                                          │
-  ├─ /gazebo_scan ──→ lidar_cone_detector ──→ /falcon/lidar_cones
-  │                                                │
-  │                              cone_fuser ◄──────┘
-  │                                 │
-  │                 │
-  │     /falcon/fused_cones (eufs_msgs)
-  │                 │
-  │   cone_map_builder ── /map/cone_map ──► path_planner ◄───────┘
-  │                                                │
-  │                                         /planning/path
-  │                                                │
-  │                                         pure_pursuit
-  │                                                │
-  └──────── /cmd ◄─────────────────────────────────┘
-```
-
-### Architecture (ground-truth dev mode)
-
-**1. Map Builder Node**
-```
-EUFS Gazebo                         
-  └─ /cones ───► cone_map_builder ──► /map/cone_map
-  (eufs_msgs)                          (map frame)
-```
-
-**2. Planning Nodes**
-```
-EUFS Gazebo                         
-  └─ /cones ───┬─► path_planner ──┐
-  (eufs_msgs)  │                  │
-/map/cone_map ─┘           /planning/path
-                                  │
-                           pure_pursuit
-                                  │
-                              /cmd ──► EUFS
-```
-
-### How it works
-
-1. **Perception stack** (perception mode) or **EUFS `/cones`** (ground-truth mode)
-   provides cone detections in the vehicle body frame (`base_footprint`).
-
-2. **cone_map_builder** subscribes to cone observations, transforms each one into
-   the `map` frame via TF, and accumulates a Kalman-filtered landmark map. After the
-   first lap, this map contains *every cone on the track* — even those currently behind
-   the car.
-
-3. **path_planner** subscribes to *both* sources:
-   - `/falcon/fused_cones` (or `/cones` in dev mode) — live cones, body frame.
-   - `/map/cone_map` — accumulated map cones, transformed from map → base_footprint
-     via TF at each planning cycle.
-
-   It **deduplicates** (merging map and live cones), then computes a midpoint centerline:
-   - Separates cones into blue (left) and yellow (right) boundary lists.
-   - For each cone, finds its nearest counterpart on the opposite side to compute a midpoint.
-   - Orders all midpoints with a greedy nearest-neighbour traversal starting from the car.
-   - First lap: builds the map. Subsequent laps: the map has the complete track, helping navigate blind spots.
-
-4. **Lap counting** — the planner tracks orange/big-orange cones near the car (within
-   `orange_detect_radius_m`). When the car enters then exits the orange zone, it
-   increments the lap counter (the initial departure from the start line is ignored).
-   After `total_laps` (0 = unlimited), the planner stops publishing paths, which causes
-   pure_pursuit's path-timeout safety to bring the car to a stop.
-
-5. **pure_pursuit** follows `/planning/path` with Ackermann steering commands on `/cmd`.
-   - Locates the **lookahead point**: the nearest path waypoint strictly ahead of the car that is ≥ `lookahead_distance` away.
-   - Computes turning angle `alpha` to that point, then calculates the required steering `delta = atan(2 * wheelbase * sin(alpha) / lookahead_distance)`.
-
-### RViz visualisation
-
-RViz opens automatically. Set **Fixed Frame = `base_footprint`** (for live view) or
-`map` (for accumulated map) and add:
-
-| Display type | Topic | What you see |
+| Argument | Default | |
 |---|---|---|
-| MarkerArray | `/planning/cone_markers` | Blue/yellow/orange cones + green centerline |
-| MarkerArray | `/map/cone_markers` | Accumulated map cones with covariance ellipses |
-| Marker | `/planning/lookahead_marker` | Orange sphere — current steering target |
-| Path | `/planning/path` | Waypoints as arrows |
-| MarkerArray | `/falcon/cone_markers` | Camera-detected cones (perception mode) |
-| MarkerArray | `/falcon/lidar_cluster_markers` | LiDAR cluster centroids (perception mode) |
+| `vehicle` | `ads_dv` | `ads_dv` or `eufs`, or a path to your own vehicle YAML |
+| `lidar` | `hesai_atx` | a lidar profile name (below) or a path to a YAML |
+| `track` | `small_track` | any `eufs_tracks` world |
+| `mode` | `autonomy` | `autonomy`, `teleop`, `both`, `none` |
+| `cones` | `sim` | `sim`: drive on the simulator's cones (`/cones`); `perception`: on `/falcon/fused_cones` |
+| `laps` | `0` | laps for the planner, 0 = unlimited |
+| `target_speed` | `3.0` | pure pursuit top speed, m/s |
+| `use_lidar`, `use_camera` | `true` | leave a sensor out (faster sim) |
+| `lidar_x/_y/_z/_roll_deg/_pitch_deg/_yaw_deg` | from the vehicle | lidar mount for this run |
+| `camera_x/_y/_z/_roll_deg/_pitch_deg/_yaw_deg` | from the vehicle | camera mount for this run |
+| `lidar_sensor_type` | `gpu_ray` | `ray` raycasts on the CPU: exact but slow (see Troubleshooting) |
+| `lidar_h_samples` | profile | fewer columns per frame, for a slow PC |
+| `coverage` | `false` | run the cone coverage metric (below) |
+| `coverage_source` | `raycast` | `raycast` (exact rays from the true pose) or `pointcloud` (Gazebo's lidar) |
+| `gazebo_gui`, `rviz` | `true` | |
 
-### Tuning
+Mount convention: `x` is metres ahead of the middle of the wheelbase, `z` metres above
+the ground, `pitch_deg` > 0 tilts the sensor down.
+
+The old entry points still work and now call `sim.launch.py`:
+`simulation.launch.py` (nothing driving; `launch_group:=default` turns the lidar and
+camera on) and `autonomy.launch.py total_laps:=5` (= `mode:=autonomy cones:=perception`).
+
+### Switching car and moving sensors
+
+Vehicle profiles live in `falcon_ws/src/falcon_description/config/vehicles/`:
+
+| Profile | Car | Wheelbase | Steering limit | Lidar mount | Camera mount |
+|---|---|---|---|---|---|
+| `ads_dv` | IMechE ADS-DV (DDT) | 1.530 m | ±21° (what the AI may request) | sensor plate, 0.423 m ahead, 0.57 m up | plate, 0.62 m up, 15° down |
+| `eufs` | EUFS FS car | 1.580 m | 0.52 rad | front wing, 0.25 m up | above the driver, 1.01 m up |
+
+Each file says where its numbers come from. To move a sensor for good, edit the
+`sensors:` block of the vehicle file (with `--symlink-install` no rebuild is needed);
+for one run, use the `lidar_*` / `camera_*` launch arguments. The URDF is generated from
+these files at launch, and every node that needs a sensor pose (lidar detector, camera
+localiser, coverage) reads it from TF, so nothing else has to change.
+
+Check a set-up without starting Gazebo:
 
 ```bash
-ros2 param set /pure_pursuit_node lookahead_distance 3.5   # smoother, less oscillation
-ros2 param set /pure_pursuit_node target_speed 1.5         # slower if car spins out
+ros2 run falcon_description falcon_urdf --list
+ros2 run falcon_description falcon_urdf --vehicle ads_dv --lidar robosense_helios_5515 --summary --set lidar_z=0.7
 ```
 
-### Path planner parameters
+### Lidar profiles
+
+In `falcon_ws/src/falcon_description/config/lidars/` (see the README there for the format):
+
+| Profile | Channels | Vertical | Horizontal |
+|---|---|---|---|
+| `hesai_atx` | 256 | ±10° (even) | 120°, 1500 columns |
+| `velodyne_vlp16` | 16 | ±15°, 2° apart | 360°, 0.2° |
+| `robosense_helios_1615` | 32 | −16°..+15°, 1° apart | 360°, 0.2° |
+| `robosense_helios_5515` | 32 | −55°..+15°, uneven | 360°, 0.2° |
+| `hesai_xt32` | 32 | −16°..+15°, 1° apart | 360°, 0.18° |
+| `ouster_os1_32` / `_64` / `_128` | 32 / 64 / 128 | ±21.2° (even) | 360°, 2048 columns |
+| `ouster_os2_128` | 128 | ±11.25° (even) | 360°, 2048 columns |
+| `example_64_gradient` | 64 | example uneven layout, dense near the horizon | 360° |
+
+A profile gives either an even fan (`uniform: {min_deg, max_deg, channels}`) or every
+channel's elevation (`angles_deg: [...]`), so any vertical-resolution layout can be
+tried by copying a file. Gazebo only spaces a ray sensor's channels evenly, so an uneven
+table is split into evenly spaced runs, one Gazebo ray sensor each (the Helios 5515
+becomes 4), and `lidar_merger` joins them into one cloud. The cloud is always on
+`/lidar/points` (frame `lidar_link`).
+
+## Cone coverage: did the lidar see every cone?
+
+```bash
+ros2 launch falcon_bringup sim.launch.py lidar:=hesai_atx coverage:=true
+```
+
+`cone_coverage` counts the lidar returns on every cone of the track (from the
+simulator's ground truth) in every lidar frame, and after `coverage_laps` laps
+(default 1) writes a report to `~/falcon_runs/<run>/` (`coverage_output_dir:=`, or
+`$FALCON_RUNS_DIR`).
+
+How the returns are counted (`coverage_source:=`):
+
+- `raycast` (default): the node casts the lidar profile's own rays (every channel ×
+  column, at the profile's rate) from the car's true pose against the cones, the
+  flat ground and the car's body (`occluder_box` in the vehicle file). Cones are
+  frustums of the FS rulebook size (`coverage_cone_shape:=fs`, 325 / 505 mm, as in
+  `lidar_coverage_and_hairpins.html`) or the Gazebo meshes (`:=eufs`). It is exact,
+  cheap, and does not need the lidar in Gazebo at all (`use_lidar:=false` runs much
+  faster). Against Gazebo's exact CPU `ray` sensor on the EUFS meshes it gave the same
+  detected / not-detected answer for 39 of 44 cones in view, with about 1.5× more
+  points per cone because the meshes are faceted and the frustums smooth.
+- `pointcloud`: counts the points of Gazebo's `/lidar/points`. Use it to check the
+  simulated sensor itself, on a machine where Gazebo's lidar renders correctly (see
+  Troubleshooting).
+
+The report:
+
+- `summary.json`: cones detected / with too few points / in view with no points / never
+  in view, per colour, the range at which cones were first detected, and the share of
+  cones detected in each range band (0–5 m, 5–10 m, ...);
+- `cones.csv`: one row per cone (status, most points and channels in one scan, ranges);
+- `run.json`: vehicle, lidar profile, mount and criteria.
+
+A cone counts as detected when one scan put at least `coverage_min_points` (3) points on
+it from at least `coverage_min_rings` (1) channel; use `coverage_min_rings:=2` for a
+stricter test. While it runs, `/coverage/summary` has a one-line status (also shown in
+the teleop window) and `/coverage/markers` colours every cone in RViz: green detected,
+orange too few points, red in view but no points, grey never in view. The report can
+be written at any time with `ros2 service call /coverage/write_report std_srvs/srv/Trigger`.
+
+Drive the lap however you like: autonomy (default), `mode:=teleop` (press C for cruise
+and steer with A/D), or `mode:=both`.
+
+### Comparing lidars and mounts (sweeps)
+
+```bash
+ros2 run falcon_evaluation lidar_sweep \
+  $(ros2 pkg prefix falcon_evaluation)/share/falcon_evaluation/config/sweep_example.yaml
+```
+
+Runs one headless lap per set-up (camera and Gazebo lidar off, coverage ray-cast,
+driving on the simulator's cones so the path does not depend on the lidar under test)
+and writes `sweep_summary.csv` / `.md` with one row per run. A sweep file lists runs and/or a grid of any `sim.launch.py`
+arguments, e.g. `grid: {lidar: [ouster_os1_32, robosense_helios_1615], lidar_z: [0.57, 0.70], lidar_pitch_deg: [0, 2]}`.
+`--dry-run` prints the commands; `--table <dir>` re-tabulates finished runs.
+
+## Teleop
+
+`mode:=teleop` or `mode:=both` opens the window with a chase camera; on a running
+simulation, `ros2 launch falcon_teleop teleop.launch.py` does the same.
+
+| Key | Action |
+|---|---|
+| W / ↑ | accelerate to the cruise speed (hold) |
+| S / ↓ | brake |
+| A / D, ← / → | steer (hold) |
+| C | cruise on/off: keep the cruise speed without holding W |
+| R / F | cruise speed ± 0.5 m/s |
+| Space | stop |
+| M | manual ↔ auto |
+
+Click the window first so it has keyboard focus. Commands go through `cmd_mux`: the
+keyboard has priority, and in AUTO the planner drives. Any driving key takes over
+from the planner; M hands back.
+
+## Path planning and control
+
+**Planner** (`falcon_planning/centerline.py`): cones within 30 m of the car (live cones
+plus the map) are triangulated (Delaunay). The path walks from the car through
+triangles, from the midpoint of one blue–yellow edge to the next; same-colour edges
+are walls, so the path cannot jump to a neighbouring part of the track however close
+it is. If only one side is in view, each boundary is chained from the car forward and
+paired with a virtual cone 3 m across. The path is smoothed, resampled at 0.5 m and
+published in the `map` frame.
+
+**Pure pursuit** (`falcon_planning/pursuit.py`): every control step the path is moved
+into the car frame with TF, the lookahead point is the exact point where the path
+leaves a circle of radius max(2.5 m, 0.6 s × speed), steering is computed from the
+rear axle, and speed drops where the path ahead is tight (`max_lateral_accel`).
+
+Why it changed: the old planner paired every yellow cone with its nearest blue cone
+over the whole map and ordered the midpoints nearest-neighbour. Corners (more cones on
+the outside) gave diagonal pairs and zig-zags, once the map held the whole track cones
+were paired across parts of the track, and the pairing took ~0.5 s per cycle on the
+984-cone hairpin track, so the 10 Hz planner fell behind and pure pursuit timed out.
+Pure pursuit also aimed at the nearest waypoint beyond 2.5 m anywhere on the path, so
+it cut corners.
+
+Tracks with 9 m hairpins (`comp_2021`, `garden_light`, `hairpins_increasing_difficulty`)
+are tighter than the ADS-DV's turning circle at ±21° (about 10.1 m are needed), so it
+touches cones there whatever the planner does; the EUFS car gets round.
+
+### Planner parameters (`config/path_planner.yaml`)
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
-| `cones_topic` | `/falcon/fused_cones` | Live FOV cones (body frame) |
-| `map_topic` | `/map/cone_map` | Accumulated landmark map (map frame) |
-| `total_laps` | `0` | Laps to drive (0 = unlimited) |
-| `orange_detect_radius_m` | `5.0` | Distance within which orange cones trigger lap counting |
-| `dedup_radius_m` | `1.0` | Merge radius for map vs live cone deduplication |
-| `waypoint_ordering` | `forward_x` | `forward_x` (sort by +x) or `nearest_neighbor` |
-| `path_extend_m` | `3.0` | Extend path past last midpoint (metres; 0 = off) |
-| `min_cones_per_side` | `1` | Minimum blue *and* yellow cones required to plan |
+|---|---|---|
+| `cones_topic` | `/falcon/fused_cones` | live cones (body frame); `/cones` with `cones:=sim` |
+| `map_topic` | `/map/cone_map` | accumulated map (map frame) |
+| `window_radius_m` | `30.0` | cones further from the car are ignored |
+| `track_width_m` | `3.0` | virtual cone offset when one side is not seen |
+| `max_track_width_m` | `6.0` | wider blue–yellow gaps are not the track |
+| `total_laps` | `0` | laps to drive (0 = unlimited) |
+| `orange_detect_radius_m` | `3.0` | orange cones this close count as the start/finish zone |
 
-### Pure pursuit parameters
+### Pure pursuit parameters (`config/pure_pursuit.yaml`)
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
-| `lookahead_distance` | `2.5` | Lookahead circle radius (metres) |
-| `wheelbase` | `1.53` | Vehicle wheelbase (metres) |
-| `target_speed` | `2.0` | Target forward speed (m/s) |
-| `max_steering_angle` | `0.44` | Steering clamp (radians, ~25°) |
-| `path_timeout_sec` | `0.5` | Stop if no path received within this window |
+|---|---|---|
+| `lookahead_distance` | `2.5` | minimum lookahead (m) |
+| `lookahead_gain` | `0.6` | lookahead grows with speed: max(distance, gain × speed) |
+| `target_speed` | `3.0` | top speed (m/s) |
+| `max_lateral_accel` | `3.0` | slows down where the path ahead is tight (0 = off) |
+| `path_timeout_sec` | `0.5` | stop if no path within this (sim time) |
+| `wheelbase`, `max_steering_angle` | from the vehicle profile | |
 
-*Tuning pure pursuit:* If the car weaves, increase `lookahead_distance`. If it cuts corners, decrease it. If spinning out on turns, decrease `target_speed`.
+If the car weaves, increase `lookahead_distance`; if it cuts corners, decrease it.
 
----
+## Topics
+
+| Topic | Type | |
+|---|---|---|
+| `/lidar/points` | PointCloud2 (best effort) | lidar cloud, frame `lidar_link` |
+| `/zed/image_raw`, `/zed/depth/image_raw` | Image | camera (RGB and depth) |
+| `/teleop_camera/image_raw` | Image | chase camera (teleop only) |
+| `/cones` | eufs_msgs/ConeArrayWithCovariance | simulated cones (FOV 180°, 20 m; colour within the camera view, 15 m) |
+| `/falcon/lidar_cones`, `/falcon/camera_cones`, `/falcon/fused_cones` | eufs_msgs/ConeArrayWithCovariance | perception |
+| `/map/cone_map` | falcon_msgs/ConeArray | cone map |
+| `/planning/path` | nav_msgs/Path | centreline (map frame) |
+| `/falcon/cmd_auto`, `/falcon/cmd_teleop` → `/cmd` | AckermannDriveStamped | via `cmd_mux` |
+| `/falcon/control_source` | String | `auto`, `teleop` or `idle` |
+| `/ground_truth/state`, `/ground_truth/track` | eufs_msgs | simulator truth |
+| `/coverage/summary`, `/coverage/markers` | String, MarkerArray | coverage metric |
+
+TF: `map → base_footprint` from the simulator (exact; EUFS's pose noise is zero), then
+the URDF (`base_footprint` is on the ground under the middle of the wheelbase).
 
 ## Packages
 
 | Package | Type | Description |
-|---------|------|-------------|
-| `falcon_msgs` | C++ | Cone and ConeArray message definitions |
-| `falcon_bringup` | Python | Launch files |
-| `falcon_common` | C++ | Shared utilities |
-| `falcon_teleop` | Python | Keyboard teleop with embedded front-view |
-| `falcon_drivers` | — | ZED/LiDAR config placeholders |
-| `falcon_cone_perception` | C++ | Raw cone detection from pointcloud + YOLO + fusion |
-| `falcon_cone_map_builder` | C++ | Global cone map |
-| `falcon_localization` | C++ | Localization |
-| `falcon_planning` | Python | Centerline path planner + Pure Pursuit controller |
-| `falcon_vehicle_comm` | C++ | Vehicle interface |
+|---|---|---|
+| `falcon_bringup` | Python | `sim.launch.py` and the older launch files, RViz layout |
+| `falcon_description` | Python | vehicle and lidar profiles, URDF builder, `falcon_urdf` tool |
+| `falcon_evaluation` | Python | cone coverage metric, `lidar_sweep` |
+| `falcon_cone_perception` | CMake/Python | YOLO + depth localiser, 3D/2D lidar cone detectors, fuser, lidar merger |
+| `falcon_cone_map_builder` | C++ | global cone map |
+| `falcon_planning` | Python | centreline planner + pure pursuit |
+| `falcon_teleop` | Python | keyboard teleop, `cmd_mux` |
+| `falcon_msgs` | C++ | Cone and ConeArray messages |
+| `falcon_common`, `falcon_localization`, `falcon_vehicle_comm`, `falcon_drivers` | | placeholders |
 
-## Teleop camera launch
+## Troubleshooting
 
-The teleop window shows a front camera view from a dedicated **teleop camera** Not the ZED but it is a separate minimal Gazebo camera at the same mount position, always on in any launch group.
+### gzserver exits with code 255
 
-**Launch order:**
-
-1. Start simulation:
+1. **Use `setup_falcon.sh`** so `EUFS_MASTER` and the install paths are set.
+2. **Permission issues**: if Gazebo or the build ran with `sudo`, fix ownership:
    ```bash
-   ros2 launch falcon_bringup simulation.launch.py
+   sudo chown -R $USER:$USER ~/.gazebo ~/.ros
+   sudo chown -R $USER:$USER falcon_ws/install   # if install is root-owned
    ```
+3. **GPU/graphics**: try `gazebo_gui:=false rviz:=false` first. The lidar (`gpu_ray`) and
+   cameras render with OpenGL even headless, so gzserver needs a display (`DISPLAY`) and
+   a GL driver. Without one, use `use_lidar:=false use_camera:=false` (coverage still
+   works) or `lidar_sensor_type:=ray` with a sparse lidar.
 
-2. In a separate terminal, launch teleop (with camera view):
-   ```bash
-   ros2 launch falcon_teleop teleop.launch.py
-   ```
+### Gazebo's lidar returns too few points
 
-**Topics:** `/teleop_camera/image_raw`, `/teleop_camera/camera_info`  
-**Dependencies:** `cv_bridge`, `opencv-python`, `Pillow` (required for teleop camera display)
+Check before trusting `/lidar/points` (e.g. for `cones:=perception` or
+`coverage_source:=pointcloud`): with the car parked, a VLP-16 at 0.70 m should give
+about 15,000 points a frame, with all 8 downward rings complete
+(`ros2 topic echo --once --field width /lidar/points`).
+
+On the test machine (Intel UHD 630 through Mesa, NVIDIA driver not loaded) the
+`gpu_ray` sensor returned only a fraction of that: 947 of ~15,000 for the VLP-16,
+almost no ground and nothing past 5 m, and about a tenth of the expected returns for
+the ATX. The CPU `ray` sensor (`lidar_sensor_type:=ray`) was exact but ran at 0.17×
+real time with the VLP-16 and ran out of memory (3.7 GB) with the ATX. Whether
+`gpu_ray` is right on an NVIDIA GPU was not tested. This is why coverage defaults to
+the ray-cast, which does not depend on Gazebo's lidar.
+
+### The sim runs slowly
+
+`use_camera:=false` saves the most, then `use_lidar:=false` (coverage still works by
+ray-cast). With a Gazebo lidar: `lidar_h_samples:=` (e.g. 750 for the ATX) or
+`lidar_rate_hz:=5`.

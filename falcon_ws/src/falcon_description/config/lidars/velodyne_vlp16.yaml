@@ -1,0 +1,10 @@
+# Velodyne VLP-16 (Puck), the team's owned lidar.
+# 16 channels 2 deg apart from -15 to +15 deg, 0.2 deg horizontal at 10 Hz.
+name: Velodyne VLP-16
+kind: spinning
+rate_hz: 10
+horizontal: {fov_deg: 360, samples: 1800}
+vertical:
+  uniform: {min_deg: -15.0, max_deg: 15.0, channels: 16}
+range: {min_m: 0.3, max_m: 100.0}
+noise_stddev_m: 0.02

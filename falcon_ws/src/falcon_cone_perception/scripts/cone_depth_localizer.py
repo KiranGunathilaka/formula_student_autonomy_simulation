@@ -4,6 +4,9 @@ import math
 import numpy as np
 
 import rclpy
+import rclpy.duration
+import rclpy.time
+import tf2_ros
 from rclpy.node import Node
 
 from sensor_msgs.msg import Image, CameraInfo
@@ -43,10 +46,14 @@ class ConeDepthLocalizer(Node):
         self.cx = None
         self.cy = None
 
-        # Camera position relative to base_footprint from tf2_echo
-        self.cam_tx = -0.080
-        self.cam_ty = 0.060
-        self.cam_tz = 1.012
+        # Camera pose in base_footprint, from TF (the URDF built from the vehicle
+        # profile), so it follows the camera height and pitch of whichever car is
+        # loaded.  It used to be hard-coded to the EUFS car's ZED with no pitch.
+        self.base_frame = "base_footprint"
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.cam_R = None
+        self.cam_t = None
 
         self.create_subscription(
             Image,
@@ -86,6 +93,29 @@ class ConeDepthLocalizer(Node):
 
     def depth_callback(self, msg: Image) -> None:
         self.latest_depth_msg = msg
+        if self.cam_R is None:
+            self.lookup_camera_pose(msg.header.frame_id)
+
+    def lookup_camera_pose(self, frame):
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.base_frame, frame, rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.1))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as e:
+            self.get_logger().warn(f"No TF {frame} -> {self.base_frame}: {e}",
+                                   throttle_duration_sec=2.0)
+            return
+        q = tf.transform.rotation
+        x, y, z, w = q.x, q.y, q.z, q.w
+        self.cam_R = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+        t = tf.transform.translation
+        self.cam_t = np.array([t.x, t.y, t.z])
+        self.get_logger().info(
+            f"Camera {frame} at x={t.x:.3f} y={t.y:.3f} z={t.z:.3f} in {self.base_frame}")
 
     def camera_info_callback(self, msg: CameraInfo) -> None:
         self.latest_camera_info = msg
@@ -101,6 +131,10 @@ class ConeDepthLocalizer(Node):
 
         if self.latest_camera_info is None or self.fx is None:
             self.get_logger().warn("No camera info received yet.", throttle_duration_sec=2.0)
+            return
+
+        if self.cam_R is None:
+            self.get_logger().warn("No camera pose from TF yet.", throttle_duration_sec=2.0)
             return
 
         try:
@@ -165,9 +199,10 @@ class ConeDepthLocalizer(Node):
             y_opt = (v - self.cy) * z / self.fy
             z_opt = z
 
-            x_base = self.cam_tx + z_opt
-            y_base = self.cam_ty - x_opt
-            z_base = self.cam_tz - y_opt
+            # The Gazebo camera looks along +x of its frame: optical (right, down,
+            # forward) -> frame (forward, left, up), then the mount (incl. pitch).
+            p_base = self.cam_R @ np.array([z_opt, -x_opt, -y_opt]) + self.cam_t
+            x_base, y_base, z_base = (float(v) for v in p_base)
 
             cone = ConeWithCovariance()
             cone.point.x = float(x_base)

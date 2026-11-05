@@ -1,0 +1,47 @@
+# IMechE ADS-DV: the shared car of the FS-AI dynamic driving task (DDT).
+#
+# Frame for every pose below: base_footprint, the ground under the middle of the
+# wheelbase; x forward, y left, z up.  So `z` is height above the ground and `x` is
+# distance ahead of the wheelbase middle.  pitch_deg > 0 tilts the sensor down.
+#
+# Override any pose at launch without editing this file, e.g.
+#   ros2 launch falcon_bringup sim.launch.py lidar_z:=0.70 camera_pitch_deg:=10
+name: ads_dv
+description: IMechE ADS-DV (FS-AI DDT car)
+
+eufs_robot: ads-dv               # eufs_racecar/robots/<eufs_robot>/ holds the vehicle model YAMLs
+chassis_mesh: ads_dv_chassis.dae # in eufs_racecar/meshes
+wheelbase_m: 1.530               # FS-AI ADS-DV Specifications & Dimensions, section 5
+track_m: 1.200                   # same source; EUFS's own ads-dv URDF put the wheels 1.0 m apart
+wheel_diameter_m: 0.505          # EUFS wheel mesh (CAD tyre: 515 mm)
+# +-21 deg is the most the AI may request (FS-AI Software Interface Spec, p. 4).
+# The EUFS vehicle model itself accepts 0.42 rad.
+max_steering_rad: 0.3665
+
+# Lidar points inside this box (base_footprint) are the car itself and are dropped.
+# x from the CAD body outline (nose +1.485 m, tail -1.328 m); width 1430 mm (spec, section 5).
+body_box: {x_min: -1.35, x_max: 1.50, y_half: 0.72, z_max: 0.85}
+
+# Bodywork below the sensors, as a box (base_footprint): in the coverage ray-cast,
+# lidar rays that enter it stop.  Top = chassis top under the sensor plate (plate top
+# 0.511 m, 100 mm above the chassis on its spacers, CAD); length and width as above.
+occluder_box: {x_min: -1.33, x_max: 1.485, y_half: 0.715, z_max: 0.41}
+
+sensors:
+  # Front sensor plate: centre 342 mm behind the front axle (CAD), i.e. 0.423 m ahead
+  # of the wheelbase middle.  0.57 m is the lidar height in the 2026 CarMaker model.
+  # A spinning lidar on a short post above the plate: lidar_z:=0.70.
+  lidar:  {x: 0.423, y: 0.0, z: 0.57, roll_deg: 0.0, pitch_deg: 0.0, yaw_deg: 0.0}
+  # Camera on the plate as in the 2026 CarMaker model: 0.39 m behind the front axle,
+  # 0.62 m up, pitched 15 deg down.
+  camera: {x: 0.375, y: 0.0, z: 0.62, roll_deg: 0.0, pitch_deg: 15.0, yaw_deg: 0.0}
+  # Teleop view: a chase camera behind and above the car (only spawned for teleop).
+  teleop_camera: {x: -4.0, y: 0.0, z: 2.0, pitch_deg: 14.0}
+  imu:    {x: 0.0, y: 0.0, z: 0.2525}
+  gps:    {x: 0.463, y: 0.068, z: 0.477}
+
+camera:
+  hfov_deg: 110          # ZED2 horizontal view (120 deg is the diagonal)
+  width: 1280
+  height: 720
+  rate_hz: 15

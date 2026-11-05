@@ -1,0 +1,12 @@
+# Ouster OS1-32, Rev 7.
+# 32 channels evenly over 42.4 deg (+21.2 to -21.2), 2048 columns at 10 Hz
+# (data.ouster.io datasheet-rev7-v3p1-os1, p. 1).  Ouster also sells "gradient" and
+# "below horizon" layouts; copy this file and list their angles in angles_deg.
+name: Ouster OS1-32
+kind: spinning
+rate_hz: 10
+horizontal: {fov_deg: 360, samples: 2048}
+vertical:
+  uniform: {min_deg: -21.2, max_deg: 21.2, channels: 32}
+range: {min_m: 0.3, max_m: 100.0}
+noise_stddev_m: 0.02

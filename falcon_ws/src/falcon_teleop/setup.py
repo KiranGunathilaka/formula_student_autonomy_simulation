@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'keyboard_teleop = falcon_teleop.keyboard_teleop:main',
+            'cmd_mux = falcon_teleop.cmd_mux:main',
         ],
     },
 )

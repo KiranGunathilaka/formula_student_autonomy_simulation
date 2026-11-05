@@ -1,0 +1,11 @@
+# RoboSense Helios 1615 (32 channels).
+# Channels 1 deg apart from -16 to +15 deg (RS-Helios-5515 user guide V3.0.1, p. 8);
+# 0.2 deg horizontal at 10 Hz (p. 16).
+name: RoboSense Helios 1615
+kind: spinning
+rate_hz: 10
+horizontal: {fov_deg: 360, samples: 1800}
+vertical:
+  uniform: {min_deg: -16.0, max_deg: 15.0, channels: 32}
+range: {min_m: 0.3, max_m: 100.0}
+noise_stddev_m: 0.02

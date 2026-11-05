@@ -37,7 +37,7 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 config,
-                {'input_topic': input_topic},
+                {'input_topic': input_topic, 'use_sim_time': True},
             ],
         ),
     ])

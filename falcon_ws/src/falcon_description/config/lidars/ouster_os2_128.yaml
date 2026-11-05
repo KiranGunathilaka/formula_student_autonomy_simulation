@@ -1,0 +1,11 @@
+# Ouster OS2-128, Rev 7.
+# 128 channels evenly over 22.5 deg (+11.25 to -11.25), 2048 columns at 10 Hz
+# (data.ouster.io datasheet-rev7-v3p1-os2, p. 1).
+name: Ouster OS2-128
+kind: spinning
+rate_hz: 10
+horizontal: {fov_deg: 360, samples: 2048}
+vertical:
+  uniform: {min_deg: -11.25, max_deg: 11.25, channels: 128}
+range: {min_m: 0.3, max_m: 100.0}
+noise_stddev_m: 0.02

@@ -1,0 +1,11 @@
+# Hesai PandarXT-32.
+# 32 channels 1 deg apart from -16 to +15 deg, 0.18 deg horizontal at 10 Hz
+# (Hesai XT32 product page; check against the datasheet before relying on it).
+name: Hesai XT32
+kind: spinning
+rate_hz: 10
+horizontal: {fov_deg: 360, samples: 2000}
+vertical:
+  uniform: {min_deg: -16.0, max_deg: 15.0, channels: 32}
+range: {min_m: 0.3, max_m: 100.0}
+noise_stddev_m: 0.02

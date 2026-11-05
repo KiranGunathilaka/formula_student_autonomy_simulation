@@ -9,16 +9,23 @@ path_planner_node:
     markers_topic: "/planning/cone_markers"
     lap_topic: "/planning/lap_count"
 
-    # --- Planning ---
-    min_cones_per_side: 1
+    # --- Frames ---
+    map_frame: "map"
+    base_frame: "base_footprint"
+    path_frame: "map"            # pure pursuit moves the path into the car frame at control time
+
+    # --- Planning (see falcon_planning/centerline.py) ---
     plan_rate_hz: 20.0
-    waypoint_ordering: "nearest_neighbor"
-    max_path_waypoints: 5
-    path_extend_m: 0.0
-    min_midpoint_x_m: -1.5
+    use_map: true
+    live_cone_timeout_s: 0.5
+    window_radius_m: 30.0        # cones further than this from the car are ignored
+    track_width_m: 3.0           # virtual cone offset when one side is not seen
+    min_track_width_m: 1.8
+    max_track_width_m: 6.0       # left-right gaps above this are not the track
+    max_path_length_m: 25.0
+    resample_step_m: 0.5
 
     # --- Map merge ---
-    map_frame: "map"
     dedup_radius_m: 1.0
 
     # --- Lap counting ---

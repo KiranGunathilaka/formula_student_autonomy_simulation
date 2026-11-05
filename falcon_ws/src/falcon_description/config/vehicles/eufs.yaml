@@ -1,0 +1,35 @@
+# EUFS's own Formula Student car (the "normal" FS car in eufs_sim).
+#
+# Frame for every pose below: base_footprint, the ground under the middle of the
+# wheelbase; x forward, y left, z up.  pitch_deg > 0 tilts the sensor down.
+name: eufs
+description: EUFS FS car (eufs_sim default)
+
+eufs_robot: eufs
+chassis_mesh: sisu-20d.dae
+wheelbase_m: 1.580               # eufs_racecar/robots/eufs/configDry.yaml
+track_m: 1.400
+wheel_diameter_m: 0.505
+max_steering_rad: 0.52           # vehicle model input range
+
+# Lidar points inside this box are the car itself and are dropped (approximate).
+body_box: {x_min: -1.25, x_max: 1.80, y_half: 0.80, z_max: 1.30}
+
+# Bodywork below the sensors, as a box (base_footprint), for the coverage ray-cast
+# (approximate; ignored when the lidar sits inside it).
+occluder_box: {x_min: -1.25, x_max: 1.60, y_half: 0.70, z_max: 0.60}
+
+sensors:
+  # Front wing, where EUFS mounts its lidar (chassis +1.683 m, 0.25 m up).
+  lidar:  {x: 1.68, y: 0.0, z: 0.25, roll_deg: 0.0, pitch_deg: 0.0, yaw_deg: 0.0}
+  # Above the driver, as in the EUFS URDF (chassis -0.08 m, 1.01 m up).
+  camera: {x: -0.08, y: 0.0, z: 1.0125, roll_deg: 0.0, pitch_deg: 0.0, yaw_deg: 0.0}
+  teleop_camera: {x: -4.0, y: 0.0, z: 2.2, pitch_deg: 14.0}
+  imu:    {x: 0.0, y: 0.0, z: 0.2525}
+  gps:    {x: 0.0, y: 0.0, z: 0.6525}
+
+camera:
+  hfov_deg: 110
+  width: 1280
+  height: 720
+  rate_hz: 15
