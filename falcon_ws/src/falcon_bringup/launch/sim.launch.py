@@ -23,7 +23,8 @@ coverage   true: run the cone coverage metric; report after `coverage_laps` laps
            coverage_output_dir (default ~/falcon_runs).  coverage_source:=raycast (default)
            casts the lidar profile's rays itself from the true pose (exact; the Gazebo
            lidar is not needed, so use_lidar:=false is faster); :=pointcloud counts the
-           points of Gazebo's /lidar/points
+           points of Gazebo's /lidar/points; :=both runs the two side by side (RViz shows
+           the ray-cast status low over each cone and Gazebo's above it)
 
 Commands always pass through cmd_mux: pure pursuit -> /falcon/cmd_auto, teleop ->
 /falcon/cmd_teleop, mux -> /cmd.
@@ -58,7 +59,7 @@ ARGS = [
     ('sim_cones_fov_deg', '180', 'view of the simulated /cones (independent of the lidar)'),
     ('coverage', 'false', 'run the cone coverage metric'),
     ('coverage_laps', '1', 'write the coverage report after this many laps'),
-    ('coverage_source', 'raycast', 'raycast (exact rays from the true pose) | pointcloud'),
+    ('coverage_source', 'raycast', 'raycast (exact rays from the true pose) | pointcloud (Gazebo lidar) | both'),
     ('coverage_cone_shape', 'fs', 'fs (rulebook cone sizes) | eufs (the Gazebo cone meshes)'),
     ('coverage_min_points', '3', 'points on a cone to count it detected'),
     ('coverage_min_rings', '1', 'distinct lidar channels on a cone to count it detected'),
@@ -219,8 +220,10 @@ def _setup(context):
             parameters=[{'cmd_topic': '/falcon/cmd_teleop', 'start_in_auto': autonomy,
                          'max_steering': float(vehicle['max_steering_rad'])}]))
 
-    if on('coverage') and a['coverage_source'] == 'pointcloud' and not use_lidar:
-        raise RuntimeError('coverage_source:=pointcloud needs use_lidar:=true')
+    if a['coverage_source'] not in ('raycast', 'pointcloud', 'both'):
+        raise RuntimeError(f"coverage_source:={a['coverage_source']}: use raycast, pointcloud or both")
+    if on('coverage') and a['coverage_source'] != 'raycast' and not use_lidar:
+        raise RuntimeError(f"coverage_source:={a['coverage_source']} needs use_lidar:=true")
     if on('coverage'):
         run_name = a['coverage_run_name'] or None
         info = {
@@ -258,17 +261,36 @@ def _setup(context):
         }
         if a['coverage_output_dir']:
             params['output_dir'] = a['coverage_output_dir']
-        if run_name:
-            params['run_name'] = run_name
-        else:
+        if not run_name:
             import datetime
-            params['run_name'] = (f"{vehicle['name']}_{os.path.splitext(os.path.basename(lidar['_file']))[0]}"
-                                  f"_{datetime.datetime.now():%Y%m%d_%H%M%S}")
-        actions.append(Node(
-            package='falcon_evaluation', executable='cone_coverage', name='cone_coverage',
-            output='screen', parameters=[params],
-            on_exit=[Shutdown(reason='coverage report written')]
-            if on('coverage_exit_on_finish') else None))
+            run_name = (f"{vehicle['name']}_{os.path.splitext(os.path.basename(lidar['_file']))[0]}"
+                        f"_{datetime.datetime.now():%Y%m%d_%H%M%S}")
+        # both: the ray-cast and Gazebo's own cloud side by side on the same drive,
+        # reports in <run>/raycast and <run>/pointcloud; the Gazebo one publishes
+        # under /coverage/pointcloud/.
+        if a['coverage_source'] == 'both':
+            nodes = [('cone_coverage', 'raycast', f'{run_name}/raycast', [], 0.6),
+                     ('cone_coverage_pointcloud', 'pointcloud', f'{run_name}/pointcloud',
+                      [(f'/coverage/{t}', f'/coverage/pointcloud/{t}')
+                       for t in ('markers', 'summary', 'write_report')], 1.4)]
+        else:
+            nodes = [('cone_coverage', a['coverage_source'], run_name, [], 0.6)]
+        exited = []
+
+        def _coverage_exit(event, context):
+            # End the launch once every coverage node has written its report.
+            exited.append(event.action.name)
+            if len(exited) == len(nodes):
+                return [Shutdown(reason='coverage report written')]
+            return None
+
+        for name, source, run, remaps, marker_z in nodes:
+            actions.append(Node(
+                package='falcon_evaluation', executable='cone_coverage', name=name,
+                output='screen', parameters=[{**params, 'source': source, 'run_name': run,
+                                              'marker_z_m': marker_z}],
+                remappings=remaps,
+                on_exit=_coverage_exit if on('coverage_exit_on_finish') else None))
 
     if on('rviz'):
         actions.append(Node(

@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'cone_coverage = falcon_evaluation.cone_coverage_node:main',
             'lidar_sweep = falcon_evaluation.lidar_sweep:main',
+            'coverage_compare = falcon_evaluation.coverage_compare:main',
         ],
     },
 )

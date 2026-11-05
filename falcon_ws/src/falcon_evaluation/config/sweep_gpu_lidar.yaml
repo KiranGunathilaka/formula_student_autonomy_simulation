@@ -1,0 +1,24 @@
+# Gazebo's own lidar against the ray-cast, on the same lap, for each lidar set-up.
+# Needs OpenGL on a working GPU (see README, "GPU lidar").
+#   ros2 run falcon_evaluation lidar_sweep $(ros2 pkg prefix falcon_evaluation)/share/falcon_evaluation/config/sweep_gpu_lidar.yaml
+# Each run writes <run>/raycast and <run>/pointcloud.  The cones are sized as the
+# Gazebo meshes (eufs) so that the two count points on the same shapes; the
+# sweep_example.yaml numbers use rulebook FS cones.
+common:
+  vehicle: ads_dv
+  track: small_track
+  laps: 1
+  target_speed: 3.0
+  use_lidar: true
+  lidar_sensor_type: gpu_ray
+  coverage_source: both
+  coverage_cone_shape: eufs
+
+runs:
+  - {name: atx_plate_level, lidar: hesai_atx}
+  - {name: atx_plate_pitch2, lidar: hesai_atx, lidar_pitch_deg: 2.0}
+  - {name: vlp16_post, lidar: velodyne_vlp16, lidar_z: 0.70}
+
+grid:
+  lidar: [robosense_helios_1615, robosense_helios_5515, hesai_xt32, ouster_os1_32, ouster_os1_64]
+  lidar_z: [0.70]

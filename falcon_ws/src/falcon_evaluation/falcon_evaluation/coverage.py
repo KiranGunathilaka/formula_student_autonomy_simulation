@@ -173,18 +173,24 @@ class CoverageAccumulator:
         npts, nring = self._raycast(R_sb, np.asarray(t_sb, dtype=float), cx, cy, view, bs, ts)
         return self._accumulate(npts, nring, view, rng)
 
+    def _columns(self):
+        """First column azimuth and column step, as the Gazebo sensor lays them out."""
+        n_h = self.h_samples
+        if self.hfov >= 2 * np.pi - 1e-6:      # -pi .. pi - step
+            return -np.pi, 2 * np.pi / n_h, True
+        return self.hcentre - self.hfov / 2, self.hfov / max(n_h - 1, 1), False  # ends included
+
+    def _occluder_for(self, O):
+        occ = self.occluder
+        if occ is not None and (occ[0] < O[0] < occ[1] and abs(O[1]) < occ[2] and O[2] < occ[3]):
+            return None   # lidar inside the box: the box cannot be its occluder
+        return occ
+
     def _raycast(self, R_sb, O, cx, cy, view, bs, ts):
         el = np.radians(self.channels)
         n_h = self.h_samples
-        full = self.hfov >= 2 * np.pi - 1e-6
-        if full:      # same columns as the Gazebo sensor: -pi .. pi - step
-            az0, daz = -np.pi, 2 * np.pi / n_h
-        else:         # both ends included
-            az0 = self.hcentre - self.hfov / 2
-            daz = self.hfov / max(n_h - 1, 1)
-        occ = self.occluder
-        if occ is not None and (occ[0] < O[0] < occ[1] and abs(O[1]) < occ[2] and O[2] < occ[3]):
-            occ = None   # lidar inside the box: the box cannot be its occluder
+        az0, daz, full = self._columns()
+        occ = self._occluder_for(O)
 
         ray_ids, ts_hit, cone_ids = [], [], []
         for i in np.nonzero(view)[0]:

@@ -62,6 +62,16 @@ Visualization Manager:
         Reliability Policy: Reliable
       Value: true
     - Class: rviz_default_plugins/MarkerArray
+      Name: Coverage from Gazebo's cloud (coverage_source:=both, upper markers)
+      Enabled: true
+      Topic:
+        Value: /coverage/pointcloud/markers
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
       Name: Cone map
       Enabled: true
       Topic:

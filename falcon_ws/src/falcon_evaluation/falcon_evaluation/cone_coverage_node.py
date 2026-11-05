@@ -9,11 +9,14 @@ that a sweep can start the next run.
 
 source:=raycast (default) casts the lidar profile's rays itself, `rate_hz` times a
 second, from `lidar_mount` (x, y, z, roll, pitch, yaw in degrees, in base_footprint):
-exact, fast, and the lidar does not have to be simulated in Gazebo at all.
+exact, fast, the lidar does not have to be simulated in Gazebo at all (no GPU
+needed), and the cones can be rulebook size (cone_shape:=fs) where Gazebo only has
+the smaller EUFS meshes.
 source:=pointcloud counts the points of `points_topic` instead (Gazebo's lidar, or a
-real one), with the mount taken from TF.  On the test PC (Intel graphics, Mesa)
-Gazebo's gpu_ray lidar dropped most returns, and the exact CPU `ray` sensor ran out of
-memory with the ATX, which is why raycast is the default.
+real one), with the mount taken from TF.  Compare it with the ray-cast on the same
+shapes (cone_shape:=eufs); coverage_source:=both in sim.launch.py runs the two
+together.  The EUFS ground plane has no visual, so Gazebo's gpu_ray gets no ground
+returns; that does not affect the cones.
 
 The pose comes from TF map -> base_footprint, which EUFS publishes from the
 simulator's state (its pose noise is zero in eufs_models/config/noise.yaml), so the
@@ -36,6 +39,7 @@ import datetime
 import json
 import math
 import os
+import threading
 
 import numpy as np
 import rclpy
@@ -115,6 +119,7 @@ class ConeCoverageNode(Node):
         p('min_range_m', 0.3)
         p('lidar_mount', [0.0])      # x, y, z, roll_deg, pitch_deg, yaw_deg (raycast)
         p('occluder_box', [0.0])     # bodywork x_min, x_max, y_half, z_max (raycast)
+        p('marker_z_m', 0.6)         # status marker floats this far above its cone
 
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self._map, self._base = g('map_frame'), g('base_frame')
@@ -136,6 +141,7 @@ class ConeCoverageNode(Node):
             occluder_box=[float(v) for v in g('occluder_box')] if len(g('occluder_box')) >= 4
             else None)
         self._source = g('source')
+        self._marker_z = float(g('marker_z_m'))
         if self._source not in ('raycast', 'pointcloud'):
             raise ValueError(f'source:={self._source}: use raycast or pointcloud')
 
@@ -147,14 +153,19 @@ class ConeCoverageNode(Node):
         self._away = False
         self._laps = 0
         self._done = False
+        self._cloud_points = 0      # finite points received (pointcloud source)
 
         self._tf_buffer = tf2_ros.Buffer()
-        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        # Own thread, so a lookup that waits for the cloud's stamp can be served.
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self, spin_thread=True)
         self._track_sub = self.create_subscription(
             ConeArrayWithCovariance, g('track_topic'), self._track_cb, 1)
         if self._source == 'pointcloud':
             self.create_subscription(PointCloud2, g('points_topic'), self._cloud_cb,
                                      qos_profile_sensor_data)
+            # Laps from the pose on a timer, as in raycast mode, so the start point is
+            # where the car stood when TF came up, not wherever the first cloud found it.
+            self.create_timer(1.0 / float(g('rate_hz')), self._pose_tick)
         else:
             m = [float(v) for v in g('lidar_mount')]
             if len(m) != 6:
@@ -210,7 +221,20 @@ class ConeCoverageNode(Node):
         c, s = math.cos(yaw), math.sin(yaw)
         tx, ty = tf.transform.translation.x, tf.transform.translation.y
         R, t = self._mount
-        self._acc.add_scan_points(cloud_xyz(msg), R, t, (c, s, tx, ty))
+        pts = cloud_xyz(msg)
+        self._cloud_points += len(pts)
+        self._acc.add_scan_points(pts, R, t, (c, s, tx, ty))
+
+    def _pose_tick(self):
+        if self._acc is None or self._done:
+            return
+        tf = self._lookup(self._base, self._map, rclpy.time.Time())
+        if tf is None:
+            return
+        q = tf.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        c, s = math.cos(yaw), math.sin(yaw)
+        tx, ty = tf.transform.translation.x, tf.transform.translation.y
         # Car position in the map: invert map -> base.
         self._update_laps(np.array([-(c * tx + s * ty), s * tx - c * ty]))
 
@@ -287,7 +311,8 @@ class ConeCoverageNode(Node):
             m.type = Marker.CYLINDER
             m.action = Marker.ADD
             h = self._acc.height[i]
-            m.pose.position.x, m.pose.position.y, m.pose.position.z = row[0], row[1], h / 2 + 0.6
+            m.pose.position.x, m.pose.position.y = row[0], row[1]
+            m.pose.position.z = h / 2 + self._marker_z
             m.pose.orientation.w = 1.0
             m.scale.x = m.scale.y = 0.3
             m.scale.z = h
@@ -304,6 +329,9 @@ class ConeCoverageNode(Node):
         summary['laps_completed'] = self._laps
         summary['distance_m'] = round(self._travelled, 1)
         summary['complete'] = self._done
+        summary['source'] = self._source
+        if self._source == 'pointcloud' and self._acc.scans:
+            summary['cloud_points_per_scan'] = round(self._cloud_points / self._acc.scans, 1)
         with open(os.path.join(self._out, 'summary.json'), 'w') as f:
             json.dump(summary, f, indent=2)
         info = dict(self._info)
@@ -325,8 +353,15 @@ class ConeCoverageNode(Node):
         return resp
 
 
+def _quiet_tf_thread(args):
+    # Ctrl-C shuts the context down under the TF listener's thread; that is not an error.
+    if args.exc_type.__name__ != 'ExternalShutdownException':
+        threading.__excepthook__(args)
+
+
 def main(args=None):
     rclpy.init(args=args)
+    threading.excepthook = _quiet_tf_thread
     node = ConeCoverageNode()
     try:
         rclpy.spin(node)
@@ -342,6 +377,7 @@ def main(args=None):
             path = node.write_report()
             if path:
                 print(f'[cone_coverage] partial report written to {path}', flush=True)
+        node._tf_listener.executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
 

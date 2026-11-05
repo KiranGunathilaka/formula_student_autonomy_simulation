@@ -24,7 +24,9 @@ Sweep file (see config/sweep_example.yaml):
     lidar: [robosense_helios_1615, ouster_os1_32]
     lidar_z: [0.57, 0.70]
 
-Any sim.launch.py argument can appear in `common`, a run, or the grid.
+Any sim.launch.py argument can appear in `common`, a run, or the grid.  With
+`use_lidar: true, coverage_source: both` each run reports both, as <run>/raycast and
+<run>/pointcloud, and the table gets a row for each.
 Results: <out>/<sweep name>/<run>/{summary.json,cones.csv,run.json} and
 <out>/<sweep name>/sweep_summary.{csv,md}.
 """
@@ -100,8 +102,13 @@ def run_one(cmd, timeout_s, log_path):
 
 def tabulate(sweep_dir):
     rows = []
+    runs = []
     for name in sorted(os.listdir(sweep_dir)):
         d = os.path.join(sweep_dir, name)
+        runs.append((name, d))
+        # coverage_source: both writes <run>/raycast and <run>/pointcloud
+        runs += [(f'{name}/{sub}', os.path.join(d, sub)) for sub in ('raycast', 'pointcloud')]
+    for name, d in runs:
         sf, rf = os.path.join(d, 'summary.json'), os.path.join(d, 'run.json')
         if not os.path.isfile(sf):
             continue
@@ -116,6 +123,7 @@ def tabulate(sweep_dir):
             'channels': lidar.get('channels', ''),
             'z_m': mount.get('z', ''),
             'pitch_deg': mount.get('pitch_deg', ''),
+            'source': s.get('source', ''),
             'complete': s.get('complete', False),
             'cones': s['cones'],
             'detected': s['detected'],
@@ -128,6 +136,7 @@ def tabulate(sweep_dir):
             'recall_10_15m': rec.get('10-15'),
             'recall_15_20m': rec.get('15-20'),
             'recall_20_25m': rec.get('20-25'),
+            'cloud_points_per_scan': s.get('cloud_points_per_scan'),
         })
     if not rows:
         print(f'No finished runs in {sweep_dir}')
