@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 
 from launch import LaunchDescription
@@ -13,7 +14,8 @@ def _resolve_yolo_device() -> str:
 
     Order:
       1) Non-empty FALCON_YOLO_DEVICE (e.g. cuda:0, cpu, cuda:1).
-      2) cuda:0 when PyTorch sees any CUDA device (host GPU or Docker --gpus).
+      2) cuda:0 when PyTorch sees any CUDA device (host GPU or Docker --gpus), asked
+         of the launch's own Python or else of the python3 the YOLO node runs on.
       3) cpu otherwise (no GPU in container, driver down, CPU-only torch).
 
     Why: camera_cone_detection used to pass cuda:0 always; without a working
@@ -25,7 +27,17 @@ def _resolve_yolo_device() -> str:
     try:
         import torch
 
-        if torch.cuda.is_available():
+        return 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    except Exception:
+        pass
+    # `ros2 launch` runs under the system Python, which may not have torch (in the
+    # Docker image only the venv does); the YOLO node runs under the python3 on PATH,
+    # so ask that one.
+    try:
+        out = subprocess.run(
+            ['python3', '-c', 'import torch; print(torch.cuda.is_available())'],
+            capture_output=True, text=True, timeout=60)
+        if out.stdout.strip().endswith('True'):
             return 'cuda:0'
     except Exception:
         pass
