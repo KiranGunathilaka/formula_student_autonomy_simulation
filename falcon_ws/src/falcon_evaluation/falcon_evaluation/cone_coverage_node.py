@@ -34,6 +34,7 @@ Services:
   /coverage/write_report  (std_srvs/Trigger) write the report now
 """
 
+import collections
 import csv
 import datetime
 import json
@@ -154,6 +155,7 @@ class ConeCoverageNode(Node):
         self._laps = 0
         self._done = False
         self._cloud_points = 0      # finite points received (pointcloud source)
+        self._clouds_dropped = 0    # clouds whose pose never reached TF
 
         self._tf_buffer = tf2_ros.Buffer()
         # Own thread, so a lookup that waits for the cloud's stamp can be served.
@@ -163,6 +165,8 @@ class ConeCoverageNode(Node):
         if self._source == 'pointcloud':
             self.create_subscription(PointCloud2, g('points_topic'), self._cloud_cb,
                                      qos_profile_sensor_data)
+            self._pending = collections.deque(maxlen=30)
+            self.create_timer(0.05, self._drain)
             # Laps from the pose on a timer, as in raycast mode, so the start point is
             # where the car stood when TF came up, not wherever the first cloud found it.
             self.create_timer(1.0 / float(g('rate_hz')), self._pose_tick)
@@ -195,10 +199,10 @@ class ConeCoverageNode(Node):
         # The track does not move; stop the plugin from publishing it.
         self.destroy_subscription(self._track_sub)
 
-    def _lookup(self, target, source, stamp):
+    def _lookup(self, target, source, stamp, timeout_s=0.1):
         try:
             return self._tf_buffer.lookup_transform(
-                target, source, stamp, timeout=rclpy.duration.Duration(seconds=0.1))
+                target, source, stamp, timeout=rclpy.duration.Duration(seconds=timeout_s))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
             self.get_logger().warn(f'TF {source} -> {target}: {e}', throttle_duration_sec=2.0)
@@ -207,23 +211,38 @@ class ConeCoverageNode(Node):
     def _cloud_cb(self, msg):
         if self._acc is None or self._done:
             return
-        if self._mount is None:
-            tf = self._lookup(self._base, msg.header.frame_id, rclpy.time.Time())
-            if tf is None:
+        self._pending.append(msg)
+        self._drain()
+
+    def _drain(self):
+        """Count the queued clouds whose pose is in TF by now.  Under load the
+        simulator's pose TF trails the clouds by up to ~0.4 s, so a cloud waits here
+        (without blocking the node) until it arrives; one older than 1 s is dropped."""
+        while self._pending and self._acc is not None and not self._done:
+            msg = self._pending[0]
+            if self._mount is None:
+                tf = self._lookup(self._base, msg.header.frame_id, rclpy.time.Time())
+                if tf is None:
+                    return
+                t = tf.transform.translation
+                self._mount = (quat_to_R(tf.transform.rotation), np.array([t.x, t.y, t.z]))
+            stamp = rclpy.time.Time.from_msg(msg.header.stamp)
+            if not self._tf_buffer.can_transform(self._base, self._map, stamp):
+                if (self.get_clock().now() - stamp).nanoseconds > 1e9:
+                    self._pending.popleft()
+                    self._clouds_dropped += 1
+                    continue
                 return
-            t = tf.transform.translation
-            self._mount = (quat_to_R(tf.transform.rotation), np.array([t.x, t.y, t.z]))
-        tf = self._lookup(self._base, self._map, rclpy.time.Time.from_msg(msg.header.stamp))
-        if tf is None:
-            return
-        q = tf.transform.rotation
-        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-        c, s = math.cos(yaw), math.sin(yaw)
-        tx, ty = tf.transform.translation.x, tf.transform.translation.y
-        R, t = self._mount
-        pts = cloud_xyz(msg)
-        self._cloud_points += len(pts)
-        self._acc.add_scan_points(pts, R, t, (c, s, tx, ty))
+            self._pending.popleft()
+            tf = self._tf_buffer.lookup_transform(self._base, self._map, stamp)
+            q = tf.transform.rotation
+            yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            c, s = math.cos(yaw), math.sin(yaw)
+            tx, ty = tf.transform.translation.x, tf.transform.translation.y
+            R, t = self._mount
+            pts = cloud_xyz(msg)
+            self._cloud_points += len(pts)
+            self._acc.add_scan_points(pts, R, t, (c, s, tx, ty))
 
     def _pose_tick(self):
         if self._acc is None or self._done:
@@ -332,6 +351,7 @@ class ConeCoverageNode(Node):
         summary['source'] = self._source
         if self._source == 'pointcloud' and self._acc.scans:
             summary['cloud_points_per_scan'] = round(self._cloud_points / self._acc.scans, 1)
+            summary['clouds_dropped_no_tf'] = self._clouds_dropped
         with open(os.path.join(self._out, 'summary.json'), 'w') as f:
             json.dump(summary, f, indent=2)
         info = dict(self._info)
