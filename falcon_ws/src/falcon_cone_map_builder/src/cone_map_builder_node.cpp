@@ -23,6 +23,7 @@ ConeMapBuilderNode::ConeMapBuilderNode(const rclcpp::NodeOptions & options)
   declare_parameter<double>("mahalanobis_threshold",    3.0);
   declare_parameter<double>("publish_rate_hz",          10.0);
   declare_parameter<double>("stale_timeout_s",          0.0);
+  declare_parameter<int>("stale_max_observations",      0);
   declare_parameter<int>("confidence_saturation",       15);
   declare_parameter<double>("cone_marker_height",       0.3);
   declare_parameter<double>("cone_marker_radius",       0.1);
@@ -82,6 +83,8 @@ ConeMapBuilderNode::ConeMapBuilderNode(const rclcpp::NodeOptions & options)
   mahalanobis_threshold_ = get_parameter("mahalanobis_threshold").as_double();
   publish_rate_hz_       = get_parameter("publish_rate_hz").as_double();
   stale_timeout_s_       = get_parameter("stale_timeout_s").as_double();
+  stale_max_observations_ =
+    static_cast<uint32_t>(get_parameter("stale_max_observations").as_int());
   confidence_saturation_ =
     static_cast<uint32_t>(get_parameter("confidence_saturation").as_int());
   cone_marker_height_      = get_parameter("cone_marker_height").as_double();
@@ -398,7 +401,10 @@ void ConeMapBuilderNode::pruneStale(double now_sec)
   landmarks_.erase(
     std::remove_if(landmarks_.begin(), landmarks_.end(),
       [&](const Landmark & lm) {
-        return (now_sec - lm.last_seen_sec) > stale_timeout_s_;
+        // A cone seen many times is real: the car has only driven on, so it stays.
+        return (now_sec - lm.last_seen_sec) > stale_timeout_s_ &&
+               (stale_max_observations_ == 0 ||
+                lm.observation_count < stale_max_observations_);
       }),
     landmarks_.end());
 }
@@ -501,7 +507,7 @@ void ConeMapBuilderNode::pruneRelative()
   // (std::remove_if with a set lookup is also fine, but index-based reverse
   // erase is simpler to reason about for a small vector)
   for (auto it = to_remove.rbegin(); it != to_remove.rend(); ++it) {
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_DEBUG(get_logger(),
       "Relative prune: removed landmark id=%u (obs=%u)",
       landmarks_[*it].id, landmarks_[*it].observation_count);
     landmarks_.erase(landmarks_.begin() + static_cast<std::ptrdiff_t>(*it));

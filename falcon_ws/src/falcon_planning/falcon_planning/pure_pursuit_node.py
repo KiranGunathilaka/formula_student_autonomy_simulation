@@ -19,8 +19,9 @@ Pure pursuit summary (see pursuit.py):
 Safety:
   - If no path arrives within `path_timeout_sec` (ROS time, so sim time in
     simulation), the vehicle stops.
-  - Lap counting is handled by the planner; when all laps are done it stops
-    publishing paths, which triggers the path timeout here.
+  - Lap counting is handled by the planner; when all laps are done it publishes
+    /planning/finished and the speed ramps down at `stop_decel` to a stop, still
+    steering along the path.
 """
 
 import math
@@ -34,6 +35,8 @@ from ackermann_msgs.msg import AckermannDriveStamped
 from builtin_interfaces.msg import Duration
 from nav_msgs.msg import Path
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
+from std_msgs.msg import Bool
 from visualization_msgs.msg import Marker
 
 from falcon_planning import centerline, pursuit
@@ -45,6 +48,7 @@ class PurePursuitNode(Node):
         super().__init__('pure_pursuit_node')
 
         self.declare_parameter('path_topic', '/planning/path')
+        self.declare_parameter('finished_topic', '/planning/finished')
         self.declare_parameter('cmd_topic', '/cmd')
         self.declare_parameter('lookahead_marker_topic', '/planning/lookahead_marker')
         self.declare_parameter('base_frame', 'base_footprint')
@@ -60,6 +64,7 @@ class PurePursuitNode(Node):
         self.declare_parameter('max_steering_angle', 0.3665)  # rad, ADS-DV AI limit (21 deg)
         self.declare_parameter('control_rate_hz', 20.0)
         self.declare_parameter('path_timeout_sec', 0.5)     # stop if path stale
+        self.declare_parameter('stop_decel', 4.0)           # m/s^2 once the laps are done
 
         path_topic = self.get_parameter('path_topic').value
         cmd_topic = self.get_parameter('cmd_topic').value
@@ -77,17 +82,24 @@ class PurePursuitNode(Node):
         self._preview = float(self.get_parameter('speed_preview_m').value)
         self._max_steer = float(self.get_parameter('max_steering_angle').value)
         self._path_timeout = float(self.get_parameter('path_timeout_sec').value)
+        self._stop_decel = float(self.get_parameter('stop_decel').value)
         rate_hz = float(self.get_parameter('control_rate_hz').value)
+        self._dt = 1.0 / rate_hz
 
         self._path_pts = None     # (N, 2) in the path's own frame
         self._path_frame = None
         self._path_time = None
         self._last_speed = 0.0
+        self._finished = False
+        self._stop_speed = None   # speed cap ramping to 0 after the finish
 
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
         self.create_subscription(Path, path_topic, self._path_cb, 10)
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(Bool, self.get_parameter('finished_topic').value,
+                                 self._finished_cb, latched)
         self._cmd_pub = self.create_publisher(AckermannDriveStamped, cmd_topic, 10)
         self._lh_pub = self.create_publisher(Marker, lh_topic, 10)
         self.create_timer(1.0 / rate_hz, self._control_loop)
@@ -105,6 +117,12 @@ class PurePursuitNode(Node):
                                    for p in msg.poses], dtype=float).reshape(-1, 2)
         self._path_frame = msg.header.frame_id or self._base_frame
         self._path_time = self.get_clock().now()
+
+    def _finished_cb(self, msg: Bool):
+        if msg.data and not self._finished:
+            self.get_logger().info(
+                f'Laps done: braking to a stop at {self._stop_decel} m/s^2 along the path')
+        self._finished = msg.data
 
     # ------------------------------------------------------------------ #
     # Control loop (runs at control_rate_hz)                              #
@@ -131,6 +149,11 @@ class PurePursuitNode(Node):
         steering = max(-self._max_steer, min(self._max_steer, steering))
         speed = pursuit.speed_for_path(path, self._target_speed, self._min_speed,
                                        self._max_lat, self._preview, centerline.path_curvature)
+        if self._finished:
+            if self._stop_speed is None:
+                self._stop_speed = self._last_speed
+            self._stop_speed = max(0.0, self._stop_speed - self._stop_decel * self._dt)
+            speed = min(speed, self._stop_speed)
         self._publish_cmd(speed, steering)
         self._publish_lookahead_marker(*lh)
 

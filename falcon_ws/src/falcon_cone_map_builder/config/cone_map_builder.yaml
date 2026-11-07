@@ -51,7 +51,7 @@ falcon_cone_map_builder_node:
     # within this distance is fused regardless of color.
     # Set to roughly half the minimum inter-cone spacing on your track.
     # Formula Student typical spacing ~3 m → safe default: 1.0 m.
-    euclidean_fallback_radius: 0.2
+    euclidean_fallback_radius: 0.5
 
     # --------------------------------------------------------------------------
     # Relative-count pruning  (NEW)
@@ -89,7 +89,7 @@ falcon_cone_map_builder_node:
     # yet. Rule of thumb: perception_rate_hz * grace_period_seconds.
     # At ~10 Hz detection rate with a 3 s grace period → 30.
     # Increase if you see real cones being pruned early in a run.
-    relative_prune_min_observations: 1
+    relative_prune_min_observations: 3
 
     # --------------------------------------------------------------------------
     # Confidence and map lifecycle
@@ -98,8 +98,12 @@ falcon_cone_map_builder_node:
     # Observation count at which confidence saturates to 1.0.
     confidence_saturation: 15
 
-    # Landmarks not observed within this window are pruned (0 = never prune).
-    stale_timeout_s: 70.0
+    # Landmarks not observed within this window are pruned (0 = never prune),
+    # but only those seen fewer than stale_max_observations times (0 = any):
+    # a cone seen many times is real and stays when the car drives on, so the
+    # map of a long lap still holds its start when the car gets back there.
+    stale_timeout_s: 5.0
+    stale_max_observations: 10
 
     # --------------------------------------------------------------------------
     # Publisher

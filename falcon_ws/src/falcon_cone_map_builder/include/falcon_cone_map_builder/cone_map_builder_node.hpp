@@ -89,8 +89,9 @@ private:
   // Pruning
   // -------------------------------------------------------------------------
 
-  // Time-based staleness pruning (existing): removes landmarks not observed
-  // within stale_timeout_s_. No-op when stale_timeout_s_ <= 0.
+  // Time-based staleness pruning: removes landmarks not observed within
+  // stale_timeout_s_ that were seen fewer than stale_max_observations_ times
+  // (0 = any count). No-op when stale_timeout_s_ <= 0.
   void pruneStale(double now_sec);
 
   // ---------------------------------------------------------------------------
@@ -136,6 +137,7 @@ private:
   double   mahalanobis_threshold_;
   double   publish_rate_hz_;
   double   stale_timeout_s_;
+  uint32_t stale_max_observations_;
   uint32_t confidence_saturation_;
   double   cone_marker_height_;
   double   cone_marker_radius_;
