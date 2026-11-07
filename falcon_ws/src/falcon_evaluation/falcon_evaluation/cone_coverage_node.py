@@ -15,8 +15,8 @@ the smaller EUFS meshes.
 source:=pointcloud counts the points of `points_topic` instead (Gazebo's lidar, or a
 real one), with the mount taken from TF.  Compare it with the ray-cast on the same
 shapes (cone_shape:=eufs); coverage_source:=both in sim.launch.py runs the two
-together.  The EUFS ground plane has no visual, so Gazebo's gpu_ray gets no ground
-returns; that does not affect the cones.
+together.  Ground returns (sim.launch.py ground:=true) lie below the 3 cm ground
+clearance in coverage.py and are not counted.
 
 The pose comes from TF map -> base_footprint, which EUFS publishes from the
 simulator's state (its pose noise is zero in eufs_models/config/noise.yaml), so the
@@ -26,6 +26,9 @@ Outputs, in <output_dir>/<run_name>/:
   summary.json      totals, per colour, first-detection range, recall by range
   cones.csv         one row per cone: status, points, rings, ranges
   run.json          vehicle, lidar profile, mount, track, criteria
+  frames.npz        every scan (record_frames): time, car pose in the map, and per
+                    cone the points, channels and range from the lidar; lidar_stats
+                    --runs turns it into the lidar statistics
 Topics:
   /coverage/markers  every cone in the map frame: green detected, orange points but
                      not enough, red in view but no points, grey never in view
@@ -40,6 +43,7 @@ import datetime
 import json
 import math
 import os
+import signal
 import threading
 
 import numpy as np
@@ -121,6 +125,7 @@ class ConeCoverageNode(Node):
         p('lidar_mount', [0.0])      # x, y, z, roll_deg, pitch_deg, yaw_deg (raycast)
         p('occluder_box', [0.0])     # bodywork x_min, x_max, y_half, z_max (raycast)
         p('marker_z_m', 0.6)         # status marker floats this far above its cone
+        p('record_frames', True)     # keep every scan for frames.npz
 
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self._map, self._base = g('map_frame'), g('base_frame')
@@ -140,7 +145,9 @@ class ConeCoverageNode(Node):
             cone_shape=g('cone_shape'), h_samples=int(g('h_samples')),
             min_range_m=float(g('min_range_m')),
             occluder_box=[float(v) for v in g('occluder_box')] if len(g('occluder_box')) >= 4
-            else None)
+            else None,
+            record=bool(g('record_frames')))
+        self._poses = []            # per recorded scan: t, x, y, yaw of the car in the map
         self._source = g('source')
         self._marker_z = float(g('marker_z_m'))
         if self._source not in ('raycast', 'pointcloud'):
@@ -243,6 +250,7 @@ class ConeCoverageNode(Node):
             pts = cloud_xyz(msg)
             self._cloud_points += len(pts)
             self._acc.add_scan_points(pts, R, t, (c, s, tx, ty))
+            self._record_pose(stamp, c, s, tx, ty, yaw)
 
     def _pose_tick(self):
         if self._acc is None or self._done:
@@ -273,7 +281,14 @@ class ConeCoverageNode(Node):
             return   # sim paused or no new pose: do not count the same frame twice
         R, t = self._mount
         self._acc.add_scan_raycast(R, t, (c, s, tx, ty))
+        self._record_pose(rclpy.time.Time.from_msg(tf.header.stamp), c, s, tx, ty, yaw)
         self._update_laps(pos)
+
+    def _record_pose(self, stamp, c, s, tx, ty, yaw):
+        """Car pose in the map for the scan just counted (map -> base inverted)."""
+        if self._acc.record:
+            self._poses.append((stamp.nanoseconds * 1e-9, -(c * tx + s * ty), s * tx - c * ty,
+                                -yaw))
 
     def _update_laps(self, pos):
         if self._start is None:
@@ -364,6 +379,14 @@ class ConeCoverageNode(Node):
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             w.writeheader()
             w.writerows(rows)
+        if self._acc.record:
+            npts, nring, rng = self._acc.frames()
+            n = min(len(npts), len(self._poses))
+            np.savez_compressed(
+                os.path.join(self._out, 'frames.npz'),
+                pose=np.array(self._poses[:n], dtype=float).reshape(-1, 4),  # t, x, y, yaw
+                npts=npts[:n], nring=nring[:n], rng=rng[:n], cones=self._acc.cones,
+                laps_completed=self._laps, complete=self._done)
         return self._out
 
     def _srv_write(self, req, resp):
@@ -393,7 +416,9 @@ def main(args=None):
             raise
     finally:
         if not node._done:
-            # Partial report (run stopped before the lap was finished).
+            # Partial report (run stopped before the lap was finished).  A second Ctrl-C
+            # (launch escalating) must not cut it short.
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
             path = node.write_report()
             if path:
                 print(f'[cone_coverage] partial report written to {path}', flush=True)

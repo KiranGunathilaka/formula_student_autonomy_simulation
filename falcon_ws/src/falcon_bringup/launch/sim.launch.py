@@ -46,7 +46,7 @@ from launch_ros.actions import Node
 ARGS = [
     ('vehicle', 'ads_dv', 'vehicle profile name or YAML path (ads_dv | eufs)'),
     ('lidar', 'hesai_atx', 'lidar profile name or YAML path'),
-    ('track', 'small_track', 'eufs_tracks world'),
+    ('track', 'small_track', 'eufs_tracks world, or a track CSV: a path, or a name in runs/tracks or falcon_bringup/tracks'),
     ('mode', 'autonomy', 'autonomy | teleop | both | none'),
     ('cones', 'sim', 'sim (/cones from the simulator) | perception (YOLO + lidar fusion)'),
     ('laps', '0', 'laps for the planner to drive, 0 = unlimited'),
@@ -57,6 +57,7 @@ ARGS = [
     ('lidar_h_samples', '', 'override columns per frame (thin a dense lidar on a slow PC)'),
     ('lidar_rate_hz', '', 'override lidar frame rate'),
     ('sim_cones_fov_deg', '180', 'view of the simulated /cones (independent of the lidar)'),
+    ('ground', 'true', 'visible ground: lidar ground returns (rings), cameras see asphalt'),
     ('coverage', 'false', 'run the cone coverage metric'),
     ('coverage_laps', '1', 'write the coverage report after this many laps'),
     ('coverage_source', 'raycast', 'raycast (exact rays from the true pose) | pointcloud (Gazebo lidar) | both'),
@@ -77,8 +78,72 @@ MOUNT_ARGS = [f'{s}_{k}' for s in ('lidar', 'camera')
               for k in ('x', 'y', 'z', 'roll_deg', 'pitch_deg', 'yaw_deg')]
 
 
-def _start_pose(track):
-    path = os.path.join(get_package_share_directory('eufs_tracks'), 'csv', f'{track}.csv')
+# eufs_tracks CSV tags -> cone models.  The ground-truth plugin finds the cones as links
+# of the model named `track` and tells their colour from the link name.
+CONE_MODELS = {'blue': 'blue_cone', 'yellow': 'yellow_cone', 'orange': 'orange_cone',
+               'big_orange': 'big_cone'}
+
+
+def _resolve_track(track):
+    """(name, world file, extra Gazebo model dir or None, track CSV) for track:=.
+
+    An eufs_tracks world by name, or a track CSV in the eufs_tracks format (the track
+    editor in falcon_driverless/lidar_coverage_and_hairpins.html exports one): a path
+    ending in .csv, or <name>.csv in $FALCON_RUNS_DIR/tracks (~/falcon_runs/tracks, which
+    is the repo's runs/tracks in Docker), else in falcon_bringup/tracks (lidar_test_track,
+    the lap of docs/lidar_statistics.html).  A CSV becomes a Gazebo world under /tmp at
+    every launch, built like the EUFS ones (small_track.world with its cones swapped).
+    """
+    tracks = get_package_share_directory('eufs_tracks')
+    world = os.path.join(tracks, 'worlds', f'{track}.world')
+    if not track.endswith('.csv') and os.path.isfile(world):
+        return track, world, None, os.path.join(tracks, 'csv', f'{track}.csv')
+    runs = os.path.join(os.path.expanduser(os.environ.get('FALCON_RUNS_DIR', '~/falcon_runs')),
+                        'tracks')
+    path = os.path.expanduser(track if track.endswith('.csv') else f'{track}.csv')
+    if not os.path.isfile(path) and not os.path.isabs(path):
+        own = os.path.join(get_package_share_directory('falcon_bringup'), 'tracks', path)
+        path = own if os.path.isfile(own) and not os.path.isfile(os.path.join(runs, path)) \
+            else os.path.join(runs, path)
+    if not os.path.isfile(path):
+        raise RuntimeError(f'track:={track}: no eufs_tracks world {track}.world, and no {path}')
+
+    name = os.path.splitext(os.path.basename(path))[0]
+    with open(path) as f:
+        rows = list(csv.DictReader(f))
+    includes, count = [], {}
+    for row in rows:
+        model = CONE_MODELS.get(row.get('tag'))
+        if model is None:
+            continue
+        i = count.get(model, 0)
+        count[model] = i + 1
+        includes.append(f"    <include>\n      <pose>{float(row['x'])} {float(row['y'])} 0.15 0 0 0"
+                        f"</pose>\n      <uri>model://{model}</uri>\n"
+                        f"      <name>{model}_{i}</name>\n    </include>\n")
+    if not includes:
+        raise RuntimeError(f'track:={track}: {path} has no cones (tags: {", ".join(CONE_MODELS)})')
+
+    root = os.path.join('/tmp', f'falcon_track_{os.getpid()}')
+    model_dir = os.path.join(root, 'models', 'falcon_imported_track')
+    os.makedirs(model_dir, exist_ok=True)
+    with open(os.path.join(model_dir, 'model.config'), 'w') as f:
+        f.write('<?xml version="1.0"?>\n<model>\n  <name>falcon_imported_track</name>\n'
+                f'  <version>1.0</version>\n  <sdf version="1.6">model.sdf</sdf>\n'
+                f'  <description>{name}, from {path}</description>\n</model>\n')
+    with open(os.path.join(model_dir, 'model.sdf'), 'w') as f:
+        f.write("<?xml version='1.0'?>\n<sdf version='1.6'>\n  <model name='track'>\n"
+                + ''.join(includes) + '  </model>\n</sdf>\n')
+    with open(os.path.join(tracks, 'worlds', 'small_track.world')) as f:
+        template = f.read()
+    world = os.path.join(root, f'{name}.world')
+    with open(world, 'w') as f:
+        f.write(template.replace("<world name='small_track'>", f"<world name='{name}'>")
+                .replace('model://small_track', 'model://falcon_imported_track'))
+    return name, world, os.path.join(root, 'models'), path
+
+
+def _start_pose(path):
     try:
         with open(path) as f:
             for row in csv.DictReader(f):
@@ -119,7 +184,8 @@ def _setup(context):
     with open(urdf_path, 'w') as f:
         f.write(urdf)
 
-    x0, y0, yaw0 = _start_pose(a['track'])
+    track_name, world, track_models, track_csv = _resolve_track(a['track'])
+    x0, y0, yaw0 = _start_pose(track_csv)
     x0 = float(a['x']) if a['x'] else x0
     y0 = float(a['y']) if a['y'] else y0
     yaw0 = float(a['yaw']) if a['yaw'] else yaw0
@@ -141,25 +207,27 @@ def _setup(context):
     cones_topic = '/cones' if cones == 'sim' else '/falcon/fused_cones'
 
     actions = [
-        LogInfo(msg=f"[falcon sim] {vehicle['description']} on {a['track']}, mode={mode}, "
+        LogInfo(msg=f"[falcon sim] {vehicle['description']} on {track_name}"
+                    f"{'' if track_models is None else f' (from {track_csv})'}, mode={mode}, "
                     f"cones={cones}"),
         LogInfo(msg=f"[falcon sim] lidar: {cfg.lidar_summary(lidar) if use_lidar else 'off'}"),
         LogInfo(msg=f"[falcon sim] lidar mount x={lm['x']:.3f} z={lm['z']:.3f} m, pitch "
                     f"{lm['pitch_deg']:+.1f} deg; camera z={s['camera']['z']:.3f} m pitch "
                     f"{s['camera']['pitch_deg']:+.1f} deg; URDF {urdf_path}"),
-        SetEnvironmentVariable('GAZEBO_MODEL_PATH', os.path.join(tracks, 'models')),
+        SetEnvironmentVariable('GAZEBO_MODEL_PATH', ':'.join(
+            p for p in (track_models, os.path.join(tracks, 'models')) if p)),
         SetEnvironmentVariable('GAZEBO_RESOURCE_PATH', resources),
         SetEnvironmentVariable('GAZEBO_PLUGIN_PATH', f'{ros_lib}:{plugin_lib}'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py')),
-            launch_arguments={'world': os.path.join(tracks, 'worlds', f"{a['track']}.world"),
+            launch_arguments={'world': world,
                               'gui': a['gazebo_gui'], 'verbose': 'false',
                               'pause': 'false'}.items()),
         Node(package='gazebo_ros', executable='spawn_entity.py', name='spawn_robot',
              output='screen',
              arguments=['-entity', 'eufs', '-file', urdf_path, '-x', str(x0), '-y', str(y0),
-                        '-z', '0.1', '-Y', str(yaw0), '-spawn_service_timeout', '60.0',
+                        '-z', '0.1', '-Y', str(yaw0), '-timeout', '600',
                         '--ros-args', '--log-level', 'warn']),
         Node(package='joint_state_publisher', executable='joint_state_publisher',
              name='joint_state_publisher', output='screen',
@@ -176,6 +244,18 @@ def _setup(context):
                  name='enable_manual_drive', output='screen')]),
         Node(package='falcon_teleop', executable='cmd_mux', name='cmd_mux', output='screen'),
     ]
+
+    if on('ground'):
+        # Visual only: EUFS's ground_plane is collision only, which gpu_ray and the
+        # cameras cannot see.  The cone detector and the coverage counter drop points
+        # within a few cm of z = 0, so the ground needs no further segmentation.
+        actions.append(Node(
+            package='gazebo_ros', executable='spawn_entity.py', name='spawn_ground',
+            output='screen',
+            arguments=['-entity', 'falcon_ground', '-file',
+                       os.path.join(get_package_share_directory('falcon_bringup'), 'config',
+                                    'ground_visual.sdf'),
+                       '-timeout', '600', '--ros-args', '--log-level', 'warn']))
 
     if use_lidar and len(lidar['groups']) > 1:
         actions.append(Node(package='falcon_cone_perception', executable='lidar_merger.py',
@@ -232,9 +312,10 @@ def _setup(context):
             'lidar': {'name': lidar.get('name'), 'file': lidar['_file'],
                       'channels': len(lidar['channels_deg']),
                       'channels_deg': lidar['channels_deg'],
-                      'horizontal': lidar['horizontal'], 'rate_hz': lidar['rate_hz']},
+                      'horizontal': lidar['horizontal'], 'rate_hz': lidar['rate_hz'],
+                      'range_max_m': float(lidar['range']['max_m'])},
             'lidar_mount': s['lidar'],
-            'track': a['track'], 'mode': mode, 'cones': cones,
+            'track': track_name, 'mode': mode, 'cones': cones,
             'target_speed': float(a['target_speed']),
         }
         params = {

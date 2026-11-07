@@ -26,6 +26,7 @@ setup(
             'lidar_sweep = falcon_evaluation.lidar_sweep:main',
             'coverage_compare = falcon_evaluation.coverage_compare:main',
             'perception_check = falcon_evaluation.perception_check:main',
+            'lidar_stats = falcon_evaluation.lidar_stats:main',
         ],
     },
 )

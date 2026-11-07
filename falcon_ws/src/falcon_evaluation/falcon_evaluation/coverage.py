@@ -49,18 +49,21 @@ CONE_SHAPES = {
     'eufs': {'small': (0.080, 0.012, 0.304), 'big': (0.100, 0.030, 0.531)},
 }
 
-RANGE_BINS = (0, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100)
+RANGE_BINS = (0, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 250)
 
 
 class CoverageAccumulator:
     def __init__(self, cones_map, channels_deg, hfov_deg, hcentre_deg=0.0,
                  max_range_m=100.0, min_points=3, min_rings=2,
                  catch_radius_m=0.25, ground_clearance_m=0.03, body_box=None,
-                 cone_shape='fs', h_samples=1800, min_range_m=0.3, occluder_box=None):
+                 cone_shape='fs', h_samples=1800, min_range_m=0.3, occluder_box=None,
+                 record=False):
         """cones_map: (N, 3) x, y, colour code in the map frame.
         h_samples, min_range_m: columns per frame and blind range (raycast mode).
         occluder_box: (x_min, x_max, y_half, z_max) of the bodywork in the vehicle
-        frame; rays that enter it stop (raycast mode, ignored if the lidar is inside)."""
+        frame; rays that enter it stop (raycast mode, ignored if the lidar is inside).
+        record: keep every scan's points, channels and range per cone (frames()), so
+        statistics can be computed from the whole run afterwards (lidar_stats)."""
         self.cones = np.asarray(cones_map, dtype=float).reshape(-1, 3)
         shapes = CONE_SHAPES[cone_shape]
         big = self.cones[:, 2] == 4
@@ -97,6 +100,8 @@ class CoverageAccumulator:
         self.bin_in_view = np.zeros(nb, dtype=int)
         self.bin_detected = np.zeros(nb, dtype=int)
         self.bin_points = np.zeros(nb, dtype=float)
+        self.record = record
+        self._frames = []
 
     # ------------------------------------------------------------------ #
     def _geometry(self, R_sb, t_sb, map_to_base):
@@ -256,6 +261,9 @@ class CoverageAccumulator:
     def _accumulate(self, npts, nring, view, rng):
         det = (npts >= self.min_points) & (nring >= self.min_rings)
         self.scans += 1
+        if self.record:
+            self._frames.append((npts.astype(np.int16), nring.astype(np.int16),
+                                 np.where(view, rng, np.inf).astype(np.float32)))
         self.in_view += view
         self.hit += npts > 0
         self.detected += det
@@ -273,6 +281,15 @@ class CoverageAccumulator:
         np.add.at(self.bin_detected, b[ok & det], 1)
         np.add.at(self.bin_points, b[ok], npts[ok])
         return int(det.sum()), int(view.sum())
+
+    def frames(self):
+        """Recorded scans: points, channels (int16) and range from the lidar (float32,
+        inf when out of view), each (scans, cones)."""
+        if not self._frames:
+            n = len(self.cones)
+            return (np.zeros((0, n), np.int16), np.zeros((0, n), np.int16),
+                    np.zeros((0, n), np.float32))
+        return tuple(np.stack(a) for a in zip(*self._frames))
 
     # ------------------------------------------------------------------ #
     def status(self):

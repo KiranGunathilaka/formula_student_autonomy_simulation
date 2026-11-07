@@ -63,12 +63,13 @@ ros2 launch falcon_bringup sim.launch.py --show-args           # every argument
 |---|---|---|
 | `vehicle` | `ads_dv` | `ads_dv` or `eufs`, or a path to your own vehicle YAML |
 | `lidar` | `hesai_atx` | a lidar profile name (below) or a path to a YAML |
-| `track` | `small_track` | any `eufs_tracks` world |
+| `track` | `small_track` | any `eufs_tracks` world, or a track CSV: a path, or a name in `runs/tracks/` (see "Your own track") |
 | `mode` | `autonomy` | `autonomy`, `teleop`, `both`, `none` |
 | `cones` | `sim` | `sim`: drive on the simulator's cones (`/cones`); `perception`: on `/falcon/fused_cones` |
 | `laps` | `0` | laps for the planner, 0 = unlimited |
 | `target_speed` | `3.0` | pure pursuit top speed, m/s |
 | `use_lidar`, `use_camera` | `true` | leave a sensor out (faster sim) |
+| `ground` | `true` | visible ground, so the lidar gets ground returns (rings) and the camera sees asphalt; `false` = EUFS's invisible plane |
 | `lidar_x/_y/_z/_roll_deg/_pitch_deg/_yaw_deg` | from the vehicle | lidar mount for this run |
 | `camera_x/_y/_z/_roll_deg/_pitch_deg/_yaw_deg` | from the vehicle | camera mount for this run |
 | `lidar_sensor_type` | `gpu_ray` | `ray` raycasts on the CPU: exact but slow (see Troubleshooting) |
@@ -79,6 +80,29 @@ ros2 launch falcon_bringup sim.launch.py --show-args           # every argument
 
 Mount convention: `x` is metres ahead of the middle of the wheelbase, `z` metres above
 the ground, `pitch_deg` > 0 tilts the sensor down.
+
+### Your own track
+
+Draw a track in the track editor of the falcon_driverless docs (*Lidar Coverage and
+Hairpins*, "Your track"); it keeps every edit within the FS-AI track rules. **Download for
+the sim (CSV)** saves `falcon_track.csv` in the `eufs_tracks` CSV format, with big orange
+cones on the start line (and on an open track's finish, so the lap counter sees it) and
+the car 4 m behind the start line. Put it in `runs/tracks/` (that is `~/falcon_runs/tracks`
+in the container) and run:
+
+```bash
+ros2 launch falcon_bringup sim.launch.py track:=falcon_track            # closed loop
+ros2 launch falcon_bringup sim.launch.py track:=my_hairpin laps:=1      # open: stop at the finish
+ros2 launch falcon_bringup sim.launch.py track:=/path/to/any_track.csv
+```
+
+Any `eufs_tracks`-format CSV works (tags `blue`, `yellow`, `orange`, `big_orange`,
+`car_start`). The launch builds a Gazebo world from it under `/tmp` each time.
+
+`track:=lidar_test_track` is a 396 m trackdrive lap built to the FS-AI 2026 track rules
+(four 13 m hairpins, a 60 m straight into the first, a chicane, a decreasing-radius turn),
+which the ADS-DV drives without touching a cone. It ships in `falcon_bringup/tracks/`,
+with the script that builds it (`make_lidar_test_track.py`).
 
 The old entry points still work and now call `sim.launch.py`:
 `simulation.launch.py` (nothing driving; `launch_group:=default` turns the lidar and
@@ -188,6 +212,23 @@ and writes `sweep_summary.csv` / `.md` with one row per run. A sweep file lists 
 arguments, e.g. `grid: {lidar: [ouster_os1_32, robosense_helios_1615], lidar_z: [0.57, 0.70], lidar_pitch_deg: [0, 2]}`.
 `--dry-run` prints the commands; `--table <dir>` re-tabulates finished runs.
 
+### Lidar statistics from Gazebo (docs/lidar_statistics.html)
+
+On the GPU machine's desktop, from the repo (not in the container):
+
+```bash
+scripts/lidar_stats_gazebo.sh                          # every lidar, about 1 h
+scripts/lidar_stats_gazebo.sh hesai_atx velodyne_vlp16 # just these
+RECORD=0 scripts/lidar_stats_gazebo.sh                 # record the screen yourself
+```
+
+For each lidar it drives one lap of `lidar_test_track` with Gazebo and RViz open
+(`coverage_source:=pointcloud`: Gazebo's own lidar points are counted on every cone in
+every frame, saved as `frames.npz`), records the screen to `docs/videos/lidar_<lidar>.mp4`,
+then runs `lidar_stats --runs` and `docs/build_lidar_statistics.py`. Results go to
+`runs/lidar_gazebo_<date>/`. Lidar ranges are the datasheet figures for a 10% target
+(profile comments), and no statistic is capped.
+
 ## Check Gazebo's lidar on your GPU (and record it)
 
 Gazebo's `gpu_ray` lidar renders the scene with OpenGL, so how good its cloud is depends
@@ -228,9 +269,11 @@ For every lidar at once: `ros2 run falcon_evaluation lidar_sweep
 $(ros2 pkg prefix falcon_evaluation)/share/falcon_evaluation/config/sweep_gpu_lidar.yaml`,
 then `coverage_compare ~/falcon_runs/<sweep>`.
 
-The EUFS ground plane has no visual, only a collision shape, so `gpu_ray` gets no
-ground returns on any GPU (the CPU `ray` sensor and a real lidar do). The lidar cone
-detector does not need them.
+The EUFS ground plane has no visual, only a collision shape, and `gpu_ray` sees visuals
+only, so `sim.launch.py` adds a visual-only ground (`ground:=true`, the default) for the
+lidar rings. The ground is flat at z = 0, so the cone detector (`ground_z_m`, 4 cm) and the
+coverage counter (3 cm) drop it by height; tested on `small_track` with the ATX, every
+point the detector keeps lies on a cone, and coverage is unchanged (71/71 cones both ways).
 
 ## Teleop
 
@@ -287,7 +330,7 @@ touches cones there whatever the planner does; the EUFS car gets round.
 | `window_radius_m` | `30.0` | cones further from the car are ignored |
 | `track_width_m` | `3.0` | virtual cone offset when one side is not seen |
 | `max_track_width_m` | `6.0` | wider blue–yellow gaps are not the track |
-| `total_laps` | `0` | laps to drive (0 = unlimited) |
+| `total_laps` | `0` | laps to drive (0 = unlimited); then `/planning/finished` and the car brakes along the path |
 | `orange_detect_radius_m` | `3.0` | orange cones this close count as the start/finish zone |
 
 ### Pure pursuit parameters (`config/pure_pursuit.yaml`)
@@ -299,6 +342,7 @@ touches cones there whatever the planner does; the EUFS car gets round.
 | `target_speed` | `3.0` | top speed (m/s) |
 | `max_lateral_accel` | `3.0` | slows down where the path ahead is tight (0 = off) |
 | `path_timeout_sec` | `0.5` | stop if no path within this (sim time) |
+| `stop_decel` | `4.0` | braking (m/s²) after the last lap, still steering along the path |
 | `wheelbase`, `max_steering_angle` | from the vehicle profile | |
 
 If the car weaves, increase `lookahead_distance`; if it cuts corners, decrease it.
@@ -353,9 +397,9 @@ the URDF (`base_footprint` is on the ground under the middle of the wheelbase).
 
 ### Gazebo's lidar returns too few points
 
-`gpu_ray` only sees visual meshes and the EUFS ground plane has none, so a frame holds
-cone and car points but no ground: about 29,000 points for the parked ATX, not the
-~157,000 a real one would return. Check the cones instead, with `coverage_source:=both`
+`gpu_ray` only sees visual meshes and the EUFS ground plane has none, so with
+`ground:=false` a frame holds cone and car points but no ground (about 19,000-29,000
+points for the ATX). With the default `ground:=true` it returns about 184,000. Check the cones instead, with `coverage_source:=both`
 (see "Check Gazebo's lidar on your GPU"). Tested (`docs/gpu_lidar_check.html`):
 
 | GPU | Hesai ATX (120°) | VLP-16 (360°) |
@@ -382,6 +426,17 @@ The container uses the host network. `docker_run.sh` keeps ROS on the machine
 (`ROS_LOCALHOST_ONLY=1`); with `ROS_LOCALHOST_ONLY=0`, two machines on one LAN and ROS
 domain running the sim receive each other's `/clock`, TF and sensors ("Detected jump
 back in time", false laps). Give each its own `ROS_DOMAIN_ID` then.
+
+### No car on a big track
+
+Gazebo loads every cone before it can spawn the car. `hairpins_increasing_difficulty`
+(984 cones) took 137 s headless on a 12-thread laptop with Intel graphics, more with the
+Gazebo window open; the spawners wait up to 10 minutes. On that PC it then ran at 0.28x
+real time with the ATX and `coverage_source:=both`.
+
+That track's hairpins tighten to 9 m, which the ADS-DV cannot turn in (see the planner
+section above): it touches cones there on any line. Use tracks with 11 m or wider
+hairpins, or `vehicle:=eufs`.
 
 ### The sim runs slowly
 

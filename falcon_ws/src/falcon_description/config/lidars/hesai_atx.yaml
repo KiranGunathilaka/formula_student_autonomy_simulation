@@ -9,5 +9,5 @@ rate_hz: 10
 horizontal: {fov_deg: 120, samples: 1500}
 vertical:
   uniform: {min_deg: -10.0, max_deg: 10.0, channels: 256}
-range: {min_m: 0.3, max_m: 100.0}   # cones past 100 m do not matter here
+range: {min_m: 0.3, max_m: 230.0}   # 230 m at 10% reflectivity (hesaitech.com/product/atx)
 noise_stddev_m: 0.02

@@ -7,5 +7,5 @@ rate_hz: 10
 horizontal: {fov_deg: 360, samples: 2048}
 vertical:
   uniform: {min_deg: -11.25, max_deg: 11.25, channels: 128}
-range: {min_m: 0.3, max_m: 100.0}
+range: {min_m: 0.3, max_m: 200.0}   # 200 m at 10% (Ouster OS2 Rev7 datasheet)
 noise_stddev_m: 0.02

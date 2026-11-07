@@ -6,5 +6,5 @@ rate_hz: 10
 horizontal: {fov_deg: 360, samples: 1800}
 vertical:
   uniform: {min_deg: -15.0, max_deg: 15.0, channels: 16}
-range: {min_m: 0.3, max_m: 100.0}
+range: {min_m: 0.3, max_m: 100.0}   # 100 m, no reflectivity stated (Puck datasheet 63-9229 Rev H)
 noise_stddev_m: 0.02
