@@ -6,7 +6,11 @@
     * the simulated cones' (/cones) lidar and camera view follow the sensors chosen
       for the run instead of a fixed 180 deg / 120 deg;
     * the two fixed-pose camera-cone plugins and the bounding-box plugin are left out
-      (nothing in Falcon reads them, and the bounding boxes ran at 50 Hz).
+      (nothing in Falcon reads them, and the bounding boxes ran at 50 Hz);
+    * the true-pose TF goes to `truth_frame` (base_footprint, or base_footprint_gt when
+      the stack's own localisation publishes base_footprint), and the plugin's rear-only
+      wheel speeds go to /eufs/wheel_speeds: /ros_can/wheel_speeds is the simulated
+      ADS-DV CAN (falcon_sim_sensors) with all four wheels.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -24,11 +28,11 @@
       <yaml_config>$(arg config_file)</yaml_config>
       <noise_config>$(arg noise_config)</noise_config>
       <referenceFrame>map</referenceFrame>
-      <robotFrame>base_footprint</robotFrame>
+      <robotFrame>$(arg truth_frame)</robotFrame>
       <publishTransform>$(arg publish_tf)</publishTransform>
       <groundTruthCarStateTopic>/ground_truth/state</groundTruthCarStateTopic>
       <localisationCarStateTopic>/odometry_integration/car_state</localisationCarStateTopic>
-      <wheelSpeedsTopicName>/ros_can/wheel_speeds</wheelSpeedsTopicName>
+      <wheelSpeedsTopicName>/eufs/wheel_speeds</wheelSpeedsTopicName>
       <groundTruthWheelSpeedsTopicName>/ground_truth/wheel_speeds</groundTruthWheelSpeedsTopicName>
       <odometryTopicName>/ground_truth/odom</odometryTopicName>
       <commandMode>$(arg command_mode)</commandMode>

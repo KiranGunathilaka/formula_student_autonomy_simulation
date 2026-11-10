@@ -18,7 +18,7 @@ setup(
     zip_safe=True,
     maintainer='FalconE Racing',
     maintainer_email='falcone@gmail.com',
-    description='Cone coverage metric and lidar sweeps for the Falcon simulation',
+    description='Cone coverage and localisation metrics and lidar sweeps for the Falcon simulation',
     license='MIT',
     entry_points={
         'console_scripts': [
@@ -27,6 +27,7 @@ setup(
             'coverage_compare = falcon_evaluation.coverage_compare:main',
             'perception_check = falcon_evaluation.perception_check:main',
             'lidar_stats = falcon_evaluation.lidar_stats:main',
+            'localization_eval = falcon_evaluation.localization_eval_node:main',
         ],
     },
 )

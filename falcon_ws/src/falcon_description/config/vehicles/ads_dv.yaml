@@ -19,8 +19,13 @@ wheel_diameter_m: 0.505          # EUFS wheel mesh (CAD tyre: 515 mm)
 max_steering_rad: 0.3665
 
 # Lidar points inside this box (base_footprint) are the car itself and are dropped.
-# x from the CAD body outline (nose +1.485 m, tail -1.328 m); width 1430 mm (spec, section 5).
-body_box: {x_min: -1.35, x_max: 1.50, y_half: 0.72, z_max: 0.85}
+# The body outline is nose +1.485 m, tail -1.328 m in the CAD and +1.462 / -1.352 m in the
+# simulator's chassis mesh; width 1430 mm (spec, section 5).  The box keeps ~0.1 m past
+# both ends, and its width takes in the front tyres steered to full lock: with the box
+# cut at the tail (-1.35 m), lidar range noise put points of the car's own tail just
+# behind it, and the 3D detector reported a cone 1.41 m behind the car in every scan
+# (Ouster OS1-128); steered tyres stuck out past 0.72 m.
+body_box: {x_min: -1.45, x_max: 1.55, y_half: 0.85, z_max: 0.85}
 
 # Bodywork below the sensors, as a box (base_footprint): in the coverage ray-cast,
 # lidar rays that enter it stop.  Top = chassis top under the sensor plate (plate top

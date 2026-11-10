@@ -13,6 +13,7 @@ import csv
 import datetime
 import html
 import shutil
+import statistics
 import subprocess
 import json
 import math
@@ -66,9 +67,96 @@ MAIN_RULE = '10:2'
 TRACE_SET = ('hesai_atx', 'ouster_os2_128', 'ouster_os1_64', 'velodyne_vlp16')
 SWEEP_SET = ('hesai_atx', 'ouster_os2_128', 'ouster_os1_128', 'ouster_os1_64', 'ouster_os1_32',
              'velodyne_vlp16')
+SIS = 'https://github.com/FS-AI/FS-AI_API/blob/main/Docs/ADS-DV_Software_Interface_Specification_v4.0.pdf'
+API_C = 'https://github.com/FS-AI/FS-AI_API/blob/main/FS-AI_API/fs-ai_api.c'
+MTI8 = 'https://www.xsens.com/hubfs/MTi%20product%20leaflet_07022025_MTi-8.pdf'
 FS_AI = 'https://www.imeche.org/docs/default-source/1-oscar/formula-student/2026/rules/fs-ai-2026-rules-v1.pdf?sfvrsn=2'
 CONE_SPEC = ('https://www.imeche.org/docs/default-source/1-oscar/formula-student/2021/forms/ai/'
              'fs-ai-dynamic-events-setup-and-cones-specification.pdf?sfvrsn=2')
+ADS_SPEC = ('https://github.com/FS-AI/FS-AI_ADS-DV_Documentation/blob/bb8f1624936f13c10a3406ea060088f2ffb4b908/'
+            'FS-AI%20ADS-DV%20Specifications%20%26%20Dimensions.md?plain=1#L64-L79')
+MAP_TOL = '0.25'
+# Laps with this noise seed and later ran with the wider body box of vehicles/ads_dv.yaml.  Before
+# it the box stopped 2 mm short of the simulator car's tail, and the Ouster OS1's detector found
+# a "cone" 1.4 m behind the car in every scan.
+BOX_WIDENED_SEED = 6
+
+
+def lap_seed(run):
+    """Noise seed of a lap: <lidar>_s<seed> for a repeat, 1 for the recorded lap."""
+    tail = run.rsplit('_s', 1)
+    return int(tail[1]) if len(tail) == 2 and tail[1].isdigit() else 1
+
+
+def tail_note(keys, laps_of, names):
+    """A sentence on false on-track cones that only laps before the body-box fix mapped, or ''."""
+    hit = {}
+    for k in keys:
+        laps = laps_of(k)
+        bad = sorted(lap_seed(r['run']) for r in laps if r.get('false_on_track'))
+        later = [r for r in laps if lap_seed(r['run']) >= BOX_WIDENED_SEED]
+        if bad:
+            if max(bad) >= BOX_WIDENED_SEED or not later:
+                return ''
+            hit[k] = bad
+    if not hit:
+        return ''
+    seeds = lambda b: ', '.join(map(str, b[:-1])) + ' and ' + str(b[-1]) if len(b) > 1 else str(b[0])  # noqa: E731
+    return ('The false cones on the track (' + '; '.join(f'the {names[k]}, seeds {seeds(b)}' for k, b in hit.items()) +
+            ') are the car\'s own tail. On those laps the box that drops the car\'s own points stopped 2 mm short of '
+            'the tail of the simulator\'s car, range noise put tail points just behind it, and the detector found a cone '
+            f'1.4 m behind the car. The laps from seed {BOX_WIDENED_SEED} on ran with the box about 0.1 m past the body '
+            'all round and mapped none. ')
+
+
+def drift_note(keys, var, names):
+    """Variant laps: lidars whose pose drifted past 1 m in a lap, and laps whose loop did not close."""
+    worst = {k: max(r['max'] for r in var(k)['laps']) for k in keys}
+    drift = sorted((k for k in keys if worst[k] > 1.0), key=lambda k: -worst[k])
+    if not drift:
+        return ''
+    reach = max(var(k)['ahead_p50']['median'] for k in drift)
+    txt = (f'The lidars whose map held no more than {math.ceil(reach)} m ahead see each cone over only a few metres of '
+           'driving, and between cones the pose follows the wheel speeds and the IMU, so their error grew over the lap, '
+           'past 1 m in the worst lap: ' + ', '.join(f'{names[k]} {worst[k]:.2f} m' for k in drift) + '. '
+           'Back at the start line the SLAM sees the first cones again and pulls the pose and the map back, by about '
+           '1 m at most (the loop closes). ')
+    for k in keys:
+        for r in var(k)['laps']:
+            if r.get('false_on_track'):
+                txt += (f'In the {names[k]}\'s seed {lap_seed(r["run"])} lap the drift was past the 1 m the SLAM allows '
+                        'between a detection and its mapped cone, so the loop did not close, and the '
+                        f'{r["false_on_track"]} cones it mapped with the drifted pose lie more than 1 m from where they '
+                        'are: those are its false cones. ')
+    return txt
+
+
+def variant_label(name):
+    if name.startswith('detector') and name[8:].isdigit():
+        return f'detector needs {name[8:]} points'
+    return name.replace('_', ' ')
+
+
+def tiers(keys, laps_of):
+    """Split keys (best first) where a lidar's best lap is below every lap of the group
+    above it: (rank label per key).  laps_of(k) -> that lidar's per-lap values."""
+    out, start, floor = {}, 0, None
+    for i, k in enumerate(keys):
+        v = laps_of(k)
+        if floor is not None and max(v) < floor:
+            start = i
+            floor = None
+        floor = min(v) if floor is None else min(floor, min(v))
+        out[k] = start
+    groups = {}
+    for k, s_ in out.items():
+        groups.setdefault(s_, []).append(k)
+    lab = {}
+    for s_, ks in groups.items():
+        r = f'{s_ + 1}' if len(ks) == 1 else f'{s_ + 1}–{s_ + len(ks)}'
+        for k in ks:
+            lab[k] = r
+    return lab
 
 
 def esc(s):
@@ -123,7 +211,7 @@ def track_features(track):
 
 
 # ---------------------------------------------------------------- charts (inline SVG)
-def dist_chart(cid, title, desc, rows, xmax):
+def dist_chart(cid, title, desc, rows, xmax, digits=1, unit='m', step=None):
     """One row per lidar: min-max line, 5th-95th bar, 25th-75th box, median tick."""
     W, lh, left, right, top = 680, 34, 182, 118, 22
     pw = W - left - right
@@ -131,12 +219,13 @@ def dist_chart(cid, title, desc, rows, xmax):
     sx = lambda v: left + pw * min(v, xmax) / xmax  # noqa: E731
     out = [f'<svg viewBox="0 0 {W} {H}" class="chart" role="img" aria-labelledby="{cid}-t {cid}-d">'
            f'<title id="{cid}-t">{esc(title)}</title><desc id="{cid}-d">{esc(desc)}</desc>']
-    step = 50 if xmax > 250 else 25 if xmax > 120 else 20 if xmax > 80 else 10
-    for t in range(0, int(xmax) + 1, step):
+    step = step or (50 if xmax > 250 else 25 if xmax > 120 else 20 if xmax > 80 else 10)
+    for i in range(int(round(xmax / step)) + 1):
+        t = i * step
         x = sx(t)
         out.append(f'<line class="grid" x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{H - 26}"/>'
-                   f'<text class="tick" x="{x:.1f}" y="{H - 10}" text-anchor="middle">{t}</text>')
-    out.append(f'<text class="tick" x="{left + pw}" y="{H - 10}" text-anchor="end" dx="40">m</text>')
+                   f'<text class="tick" x="{x:.1f}" y="{H - 10}" text-anchor="middle">{t:g}</text>')
+    out.append(f'<text class="tick" x="{left + pw}" y="{H - 10}" text-anchor="end" dx="40">{esc(unit)}</text>')
     out.append(f'<text class="tick" x="{left + pw + 10}" y="{top - 9}">5th · median</text>')
     for i, (lab, k, tip) in enumerate(rows):
         y = top + i * lh + lh / 2
@@ -147,7 +236,8 @@ def dist_chart(cid, title, desc, rows, xmax):
                    f'<rect class="p90" x="{sx(k["p5"]):.1f}" y="{y - 4}" width="{max(sx(k["p95"]) - sx(k["p5"]), 1.5):.1f}" height="8" rx="2"/>'
                    f'<rect class="iqr" x="{sx(k["p25"]):.1f}" y="{y - 8}" width="{max(sx(k["p75"]) - sx(k["p25"]), 2):.1f}" height="16" rx="3"/>'
                    f'<line class="med" x1="{sx(k["p50"]):.1f}" y1="{y - 11}" x2="{sx(k["p50"]):.1f}" y2="{y + 11}"/>'
-                   f'<text class="val" x="{left + pw + 10}" y="{y + 4}">{fmt(k["p5"])} · {fmt(k["p50"])}</text></g>')
+                   f'<text class="val" x="{left + pw + 10}" y="{y + 4}">{fmt(k["p5"], digits)} · '
+                   f'{fmt(k["p50"], digits)}</text></g>')
     out.append('</svg>')
     key = ('<div class="dkey"><span><i class="k-whisk"></i>lowest to highest</span>'
            '<span><i class="k-p90"></i>5th to 95th percentile</span>'
@@ -155,19 +245,31 @@ def dist_chart(cid, title, desc, rows, xmax):
     return key + ''.join(out)
 
 
-def trace_chart(cid, title, desc, series, lap, features):
-    """Known ahead along the lap; crosshair tooltip in JS (data in a JSON block)."""
+def trace_chart(cid, title, desc, series, lap, features, ylabel='known ahead, m', ystep=None,
+                digits=1, unit='m', names=None):
+    """A value along the lap per series; crosshair tooltip in JS (data in a JSON block).
+    series: (key, s_m, values, done) with key a lidar (colour from SLOT) or one of `names`
+    ({key: (label, css colour)})."""
     W, H, left, right, top, bottom = 680, 360, 46, 118, 30, 40
     pw, ph = W - left - right, H - top - bottom
-    ymax = max(50, math.ceil(max(max(v) for _, _, v, _ in series) / 50) * 50)
+    top_v = max(max(v) for _, _, v, _ in series)
+    if ystep is None:
+        ymax = max(50, math.ceil(top_v / 50) * 50)
+        ystep = 50 if ymax > 150 else 25
+    else:
+        ymax = max(ystep, math.ceil(top_v / ystep - 1e-9) * ystep)
+    names = names or {}
+    nm = lambda k: names[k][0] if k in names else NAME[k].replace(' (owned)', '')  # noqa: E731
+    col = lambda k: names[k][1] if k in names else f'var(--c{SLOT[k]})'  # noqa: E731
     sx = lambda s: left + pw * s / lap  # noqa: E731
     sy = lambda v: top + ph * (1 - min(v, ymax) / ymax)  # noqa: E731
     out = [f'<div class="trace" id="{cid}"><svg viewBox="0 0 {W} {H}" class="chart" role="img" '
            f'aria-labelledby="{cid}-t {cid}-d"><title id="{cid}-t">{esc(title)}</title><desc id="{cid}-d">{esc(desc)}</desc>']
-    for t in range(0, ymax + 1, 50 if ymax > 150 else 25):
+    for i in range(int(round(ymax / ystep)) + 1):
+        t = i * ystep
         y = sy(t)
         out.append(f'<line class="grid" x1="{left}" y1="{y:.1f}" x2="{left + pw}" y2="{y:.1f}"/>'
-                   f'<text class="tick" x="{left - 6}" y="{y + 4:.1f}" text-anchor="end">{t}</text>')
+                   f'<text class="tick" x="{left - 6}" y="{y + 4:.1f}" text-anchor="end">{t:g}</text>')
     for t in range(0, int(lap) + 1, 50):
         out.append(f'<text class="tick" x="{sx(t):.1f}" y="{top + ph + 16}" text-anchor="middle">{t}</text>')
     for lab, s in features:
@@ -177,17 +279,17 @@ def trace_chart(cid, title, desc, series, lap, features):
     out.append(f'<line class="axis" x1="{left}" y1="{top + ph}" x2="{left + pw}" y2="{top + ph}"/>'
                f'<text class="tick" x="{left + pw / 2}" y="{H - 6}" text-anchor="middle">distance along lap 1, m</text>'
                f'<text class="tick" x="12" y="{top + ph / 2}" transform="rotate(-90 12 {top + ph / 2})" '
-               f'text-anchor="middle">known ahead, m</text>')
+               f'text-anchor="middle">{esc(ylabel)}</text>')
     ends = []
     for key, s_m, v, done in series:
-        c = f'var(--c{SLOT[key]})'
+        c = col(key)
         d = 'M' + 'L'.join(f'{sx(a):.1f},{sy(b):.1f}' for a, b in zip(s_m, v))
         out.append(f'<path d="{d}" fill="none" stroke="{c}" stroke-width="2" stroke-linejoin="round"/>')
         if done is not None:
             out.append(f'<circle cx="{sx(s_m[-1]):.1f}" cy="{sy(v[-1]):.1f}" r="4" fill="var(--bg)" '
                        f'stroke="{c}" stroke-width="2"><title>{esc(NAME[key])}: every cone of the lap '
                        f'in the map from {done:.0f} m</title></circle>')
-        ends.append([sy(v[-1]), NAME[key].replace(' (owned)', ''), c])
+        ends.append([sy(v[-1]), nm(key), c])
     ends.sort()
     for i in range(1, len(ends)):
         ends[i][0] = max(ends[i][0], ends[i - 1][0] + 13)
@@ -198,11 +300,12 @@ def trace_chart(cid, title, desc, series, lap, features):
     out.append(f'<line class="xh" x1="0" y1="{top}" x2="0" y2="{top + ph}" visibility="hidden"/>'
                f'<rect class="hitbox" x="{left}" y="{top}" width="{pw}" height="{ph}"/></svg>'
                f'<div class="tip" hidden></div></div>')
-    data = {'left': left, 'pw': pw, 'W': W, 'lap': lap,
-            'series': [{'name': NAME[k].replace(' (owned)', ''), 'slot': SLOT[k], 's': s_m, 'v': v,
+    data = {'left': left, 'pw': pw, 'W': W, 'lap': lap, 'digits': digits, 'unit': unit,
+            'series': [{'name': nm(k), 'colour': col(k), 's': s_m, 'v': v,
                         'done': done} for k, s_m, v, done in series]}
     out.append(f'<script type="application/json" id="{cid}-data">{json.dumps(data)}</script>')
-    legend = ''.join(f'<span style="--c:var(--c{SLOT[k]})">{esc(NAME[k])}</span>' for k, _, _, _ in series)
+    legend = ''.join(f'<span style="--c:{col(k)}">{esc(names[k][0] if k in names else NAME[k])}</span>'
+                     for k, _, _, _ in series)
     return f'<div class="legend">{legend}</div>' + ''.join(out)
 
 
@@ -354,7 +457,7 @@ def main():
     p.append(f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Lidar Statistics</title>
-<meta name="description" content="Gazebo statistics for the ADS-DV lidar choice: {len(lidars)} lidars drive the same rule-legal lap with four hairpins, every frame of each simulated point cloud is counted on every cone, and how far ahead each one knows the track is shown in full, uncapped, with the screen recordings.">
+<meta name="description" content="Gazebo statistics for the ADS-DV lidar choice: {len(lidars)} lidars drive the same rule-legal lap with four hairpins, every frame of each simulated point cloud is counted on every cone, and how far ahead each one knows the track is shown in full, uncapped, with the screen recordings; the car drives on its own pose (wheel speeds, MTi-8 IMU and cone SLAM on the lidar under test), and its localisation error is compared per lidar too.">
 <meta name="doc-section" content="Findings">
 <meta name="date" content="{datetime.date.today().isoformat()}">
 <style>
@@ -418,7 +521,8 @@ video{{width:100%;border-radius:8px;background:#000}} .vid{{margin:14px 0 22px}}
 <body><main>
 <h1>Lidar Statistics</h1>
 <p class="lede">Which lidar should the ADS-DV carry? Each candidate drove the same rule-legal lap in Gazebo, and
-every frame of its simulated point cloud was counted on every cone.</p>
+every frame of its simulated point cloud was counted on every cone. The car drove on its own pose, so each lidar is
+also judged on how well the car knew where it was.</p>
 <p class="meta">Gazebo 11 with GPU-rendered lidars (RTX 5060) · ADS-DV, {fmt(speed)} m/s target speed ·
 {esc(track)}: {lap:.0f} m driven, {n_cones} cones, four hairpins · {len(lidars)} lidars · one lap each</p>
 ''')
@@ -463,6 +567,75 @@ every frame of its simulated point cloud was counted on every cone.</p>
             '<li><b>Why: beam spacing.</b> The ATX spaces its 256 channels about 0.08° apart, 25 times closer than the '
             'VLP-16 and about 12 times closer than a 32-channel lidar, so a cone far ahead still crosses several of its beams. '
             'Its 120° view costs little: the cones beside and behind the car are already in the map.</li>')
+    locs = [k for k in lidars if res[k].get('localization')]
+    LO = lambda k: res[k]['localization']  # noqa: E731
+    if locs:
+        def lap_p95(k, q='median'):
+            lp = LO(k).get('laps') or {}
+            return lp['p95'][q] if lp.get('n', 0) > 1 else LO(k)['slam']['position_m']['p95']
+        by = sorted(locs, key=lap_p95)
+        b0, bl = by[0], by[-1]
+        many = all((LO(k).get('laps') or {}).get('n', 0) > 1 for k in locs)
+        n_laps = min((LO(k).get('laps') or {}).get('n', 1) for k in locs)
+        dr_max = max(LO(k)['dead_reckoning']['position_m']['max'] for k in locs)
+        txt = (f'<li><b>Localisation: the car drove on its own pose, and with every lidar it knew it to within '
+               f'centimetres.</b> ' + (f'Over {n_laps} laps per lidar, the' if many else 'The') +
+               f' 95th percentile of the position error was {lap_p95(b0):.2f} m with the {esc(NAME[b0])} '
+               f'and {lap_p95(bl):.2f} m with the {esc(NAME[bl])}' + (' (medians over the laps)' if many else '') +
+               f'; wheel speeds and the IMU alone drifted up to {dr_max:.2f} m. ')
+        if many:
+            # tiers() ranks higher-is-better values: pass the errors negated.
+            lab = tiers(by, lambda k: [-r['p95'] for r in LO(k)['laps']['laps']])
+            grp = {}
+            for k in by:
+                grp.setdefault(lab[k], []).append(k)
+            if len(grp) > 1:
+                txt += ('Ranked, with lidars sharing a place where their laps overlap: ' +
+                        '; '.join(f'{r_}: ' + ', '.join(esc(NAME[k]) for k in ks) for r_, ks in grp.items()) +
+                        '. A lidar ranks below a group only if even its best lap was worse than every lap in that group. ')
+            else:
+                txt += 'The lidars overlap from lap to lap, so their order is not settled by these runs. '
+        txt += '<a href="#loc">Localisation</a> has the distributions and the lap-to-lap spread.</li>'
+        items.append(txt)
+        mlap = [k for k in locs if (LO(k).get('laps') or {}).get('n_map', 0) > 0]
+        if mlap:
+            ML = lambda k: LO(k)['laps']  # noqa: E731
+            sc = lambda k, q='ahead_p50': ML(k)[q]['median']  # noqa: E731
+            ranked = sorted(mlap, key=lambda k: -sc(k))
+            rank = tiers(ranked, lambda k: [r['ahead_p50'] for r in ML(k)['laps'] if r.get('ahead_p50') is not None])
+            top = [k for k in ranked if rank[k] == rank[ranked[0]]]
+            txt = (f'<li><b>Map building: the {esc(NAME[ranked[0]])}\'s map held the most track ahead.</b> '
+                   f'Median over the lap of how far ahead the SLAM map had every cone within {MAP_TOL} m of where it is: '
+                   + ', '.join(f'{esc(NAME[k].split(" (")[0])} {sc(k):.0f} m' for k in ranked) +
+                   f' (medians over {min(ML(k)["n_map"] for k in mlap)} laps each). ')
+            if len(top) > 1:
+                txt += ('The laps of ' + ', '.join(f'the {esc(NAME[k])}' for k in top) +
+                        ' overlap, so they share first place. ')
+            alt = {q: sorted(mlap, key=lambda k: -sc(k, q)) for q in ('ahead_tight_p50', 'ahead_loose_p50')}
+            if all(v[0] == ranked[0] for v in alt.values()):
+                txt += 'The top lidar is the same at 0.1 m and 0.5 m. '
+            else:
+                txt += ('At 0.1 m the top is the ' + esc(NAME[alt['ahead_tight_p50'][0]]) + ', at 0.5 m the ' +
+                        esc(NAME[alt['ahead_loose_p50'][0]]) + '. ')
+            acc = sorted(mlap, key=lambda k: sc(k, 'map_error_p95'))
+            txt += (f'The finished map, which later laps drive on, was most accurate with the {esc(NAME[acc[0]])} '
+                    f'({sc(acc[0], "map_error_p95"):.2f} m, 95th percentile) and least with the {esc(NAME[acc[-1]])} '
+                    f'({sc(acc[-1], "map_error_p95"):.2f} m). ')
+            for vn in sorted({v for k in mlap for v in (LO(k).get('variants') or {})}):
+                vk = [k for k in mlap if vn in (LO(k).get('variants') or {})]
+                vs = lambda k: LO(k)['variants'][vn]['ahead_p50']['median']  # noqa: E731
+                vr = sorted(vk, key=lambda k: -vs(k))
+                txt += (f'With a stricter detector ({esc(variant_label(vn))}): ' +
+                        ', '.join(f'{esc(NAME[k].split(" (")[0])} {vs(k):.0f} m' for k in vr) + '. ')
+                vp = lambda k: LO(k)['variants'][vn]['p95']['median']  # noqa: E731
+                lo_ = sorted(vk, key=vp)
+                wmax = max(r['max'] for k in vk for r in LO(k)['variants'][vn]['laps'])
+                txt += (f'Its position error, 95th percentile, ran from {vp(lo_[0]):.2f} m '
+                        f'({esc(NAME[lo_[0]].split(" (")[0])}) to {vp(lo_[-1]):.2f} m ({esc(NAME[lo_[-1]].split(" (")[0])}), '
+                        f'medians over the laps; the lidars that mapped only a few metres ahead drifted, up to {wmax:.1f} m '
+                        'in a lap (table 14). ')
+            txt += '<a href="#map">Map building</a> has the score per lidar.</li>'
+            items.append(txt)
     p.append('<section class="key"><h2>Results</h2><ul>' + ''.join(items) + '</ul></section>')
 
     # ---- the track
@@ -523,14 +696,18 @@ median, 90th percentile and furthest, over every cone.</td>
 </svg></figure>
 <ol>
 <li><b>Drive.</b> The car is the ADS-DV model (1.53 m wheelbase, ±21° steering) in the EUFS Gazebo simulator. The
-stack's own centreline planner and pure pursuit drive one lap at up to {fmt(speed)} m/s. They steer on the cones the
-simulator reports within 20 m and 180°, not on the lidar under test, so <b>every lidar gets the same drive</b>.</li>
+stack's own centreline planner and pure pursuit drive one lap at up to {fmt(speed)} m/s, on the car's own pose
+estimate (see <a href="#loc">Localisation</a>). They steer on the cones the simulator reports within 20 m and 180°,
+not on the lidar under test, so <b>every lidar gets nearly the same drive</b>: the lines differ only by the
+localisation error, centimetres.</li>
 <li><b>Simulate the lidar.</b> Gazebo renders every beam of the lidar's profile on the GPU, ten times a second, from its
-mount on the car, and publishes the point cloud a real lidar would. Near cones hide far ones, the car's body hides
+mount on the car, and publishes the point cloud a real lidar would. Every lidar gets all ten frames: the nodes share
+the clouds through 32 MB shared-memory segments. With the default transport a 3 MB ATX frame went as UDP fragments,
+and most ATX frames were lost. Near cones hide far ones, the car's body hides
 beams, and each range gets 2 cm of Gaussian noise. Each lidar's range is the figure its datasheet gives for a 10%
 reflective target (table below).</li>
 <li><b>Count.</b> The <code>cone_coverage</code> node takes each cloud, places it on the map using the simulator's
-true car pose, and counts the points within 0.25 m of each cone's axis and above the ground, and the channels they came
+true car pose (not the car's estimate, so only the lidar is judged here), and counts the points within 0.25 m of each cone's axis and above the ground, and the channels they came
 from. It keeps every frame and writes them to <code>frames.npz</code> when the lap ends.</li>
 <li><b>Statistics.</b> <code>lidar_stats --runs</code> applies each detection rule to those frames and computes the
 statistics above. <code>scripts/lidar_stats_gazebo.sh</code> runs all of it, one lidar after another, and records each
@@ -671,6 +848,300 @@ a short post above it, 0.70 m up, level.</p>
     scans = ', '.join(f'{esc(NAME[s].split(" (")[0])} {res[s]["frames"]}' for s in lidars)
     p.append(f'<p class="note">Frames counted per lidar (one lap each): {scans}.</p>')
 
+    # ---- localisation
+    if locs:
+        p.append(f"""<h2 id="loc">Localisation</h2>
+<p>In these runs nothing in the stack read the simulator's pose. The car found its own pose from what the ADS-DV and
+the IMU we plan to fit give it, and drove on it; the lidar under test fed the cone SLAM. The errors below are the
+car's estimate against the simulator's true pose, which only the evaluation read.</p>
+<figure><svg class="diag" viewBox="0 0 760 300" role="img" aria-labelledby="dl-t"><title id="dl-t">Localisation: CAN wheel speeds and the IMU feed the odometry EKF; the lidar's cones and the odometry feed the cone SLAM, which gives the planner its pose</title>
+<rect class="box" x="10" y="20" width="170" height="64" rx="8"/><text class="t" x="95" y="46" text-anchor="middle">ADS-DV CAN</text>
+<text class="s" x="95" y="66" text-anchor="middle">4 wheel rpm, steer angle</text>
+<rect class="box" x="10" y="104" width="170" height="64" rx="8"/><text class="t" x="95" y="130" text-anchor="middle">MTi-8 IMU</text>
+<text class="s" x="95" y="150" text-anchor="middle">gyro, accelerometer</text>
+<rect class="box" x="225" y="62" width="160" height="64" rx="8"/><text class="t" x="305" y="88" text-anchor="middle">Odometry EKF</text>
+<text class="s" x="305" y="108" text-anchor="middle">odom → base_footprint</text>
+<rect class="box" x="10" y="188" width="170" height="64" rx="8"/><text class="t" x="95" y="214" text-anchor="middle">Lidar under test</text>
+<text class="s" x="95" y="234" text-anchor="middle">Gazebo point cloud</text>
+<rect class="box" x="225" y="188" width="160" height="64" rx="8"/><text class="t" x="305" y="214" text-anchor="middle">Cone detector</text>
+<text class="s" x="305" y="234" text-anchor="middle">clusters → cone x, y</text>
+<rect class="box" x="430" y="125" width="155" height="64" rx="8"/><text class="t" x="507" y="151" text-anchor="middle">Cone EKF-SLAM</text>
+<text class="s" x="507" y="171" text-anchor="middle">map → odom, cone map</text>
+<rect class="box" x="620" y="125" width="130" height="64" rx="8"/><text class="t" x="685" y="151" text-anchor="middle">Planner and</text>
+<text class="t" x="685" y="169" text-anchor="middle">pure pursuit</text>
+<path class="ln" d="M180,52H202V82H223" marker-end="url(#ah)"/><path class="ln" d="M180,136H202V106H223" marker-end="url(#ah)"/>
+<path class="ln" d="M180,220H223" marker-end="url(#ah)"/>
+<path class="ln" d="M385,94H407V145H428" marker-end="url(#ah)"/><path class="ln" d="M385,220H407V169H428" marker-end="url(#ah)"/>
+<path class="ln" d="M585,157H618" marker-end="url(#ah)"/>
+<text class="s" x="507" y="230" text-anchor="middle">evaluation only: the simulator's</text>
+<text class="s" x="507" y="246" text-anchor="middle">true pose, map → base_footprint_gt</text>
+</svg></figure>
+<h3>What the car is given</h3>
+<div class="tw"><table><thead><tr><th>Sensor</th><th>Simulated as</th><th>Source</th></tr></thead><tbody>
+<tr><td>ADS-DV wheel speeds</td><td>All four wheels every 10 ms, as unsigned whole rpm (1 rpm = 0.026 m/s on the 0.505 m
+wheel); each wheel's rolling speed at its own Ackermann angle. The tyre's true rolling radius is 1% larger than the one
+the odometry assumes: an assumption, as the EUFS wheel (505 mm) and the CAD tyre (515 mm) are 2% apart.</td>
+<td>VCU2AI_Speeds, {link("Software Interface Specification v4.0, p. 9", SIS + "#page=9")}; read as uint16 rpm in
+{link("fs-ai_api.c", API_C)}</td></tr>
+<tr><td>ADS-DV steer angle</td><td>The bicycle-model angle in 0.1° steps, every 10 ms.</td>
+<td>VCU2AI_Steer, {link("SIS v4.0, p. 9", SIS + "#page=9")}; 0.1 scaling in {link("fs-ai_api.c", API_C)}</td></tr>
+<tr><td>Xsens MTi-8 IMU</td><td>Gyro noise 0.003 °/s/√Hz and in-run bias 6 °/h; accelerometer 70 µg/√Hz and 40 µg; at
+200 Hz. Raw rates only: the MTi's own orientation output is not used.</td>
+<td>{link("MTi-8 product leaflet (Movella, Feb 2025)", MTI8)}</td></tr>
+</tbody></table></div>
+<p class="note">The ADS-DV's own PCAN-GPS IMU and GPS, which the FS-AI API also reads, are not used, and neither is RTK.
+The recorded laps all used the same noise seed; the repeat laps (table 10) used others. The sensors come out on the topics the real drivers use
+(<code>/ros_can/wheel_speeds</code> as the EUFS/Bristol <code>ros_can</code> bridge, <code>/imu/data</code> as the Xsens
+driver), so the same localisation runs on the car.</p>
+<h3>How it works</h3>
+<ol>
+<li><b>Odometry EKF</b> (<code>falcon_localization/odometry.py</code>), 200 Hz. The gyro and the accelerometer predict
+heading and the body velocities. Each CAN frame then corrects them with all four wheels (each wheel's speed is the body
+velocity at that wheel along its heading). It also uses a soft "the rear axle does not slide" constraint. While all
+four wheels read 0 rpm at the start, the gyro's bias is learnt. On its own this is the "odometry alone" line below.</li>
+<li><b>Cone detector</b> (<code>lidar_cone_detector_3d.py</code>). Points between 4 cm and 70 cm above the ground are
+clustered on a 15 cm grid, and clusters the size of a cone become detections without colour. Range: the lidar's full
+datasheet range. Points on the car itself are dropped by a box about 0.1 m bigger than the body, wide enough for the
+front tyres at full lock; cut exactly at the tail, range noise left points of the tail outside it, and the detector
+reported a cone just behind the car in every scan.</li>
+<li><b>Cone EKF-SLAM</b> (<code>falcon_localization/slam.py</code>), every scan:
+<ul>
+<li>predicts with the odometry since the last scan;</li>
+<li>pairs the detections with the mapped cones by nearest Mahalanobis distance, as one assignment, inside a χ² gate
+and no more than 1 m from where the mapped cone should be. The χ² gate alone is not enough: after a lap the car's
+uncertainty relative to the cones mapped at the start reaches metres, and with a detector that finds cones only within
+about 6 m, a cone the map did not hold yet paired with its neighbour one cone spacing on, and the car jumped 3–5 m at
+the loop closure;</li>
+<li>corrects the pose and every mapped cone in one update.</li>
+</ul>
+A new cone joins the map once it has been seen in 3 scans, from car positions at least 1 m apart, with its sightings
+staying together. Returns that move with the car never join.</li>
+<li><b>Evaluation</b> (<code>falcon_evaluation/localization.py</code>). Every 0.05 s it records the estimate, the true
+pose, and the odometry alone (lined up with the truth at the start). Errors are taken every 0.5 m driven, so time
+standing still does not count. Like the rest of this page they are shown as full distributions, uncapped.</li>
+</ol>""")
+        mx = max(LO(k)['slam']['position_m']['max'] for k in locs)
+        st = 0.05 if mx <= 0.3 else 0.1 if mx <= 0.6 else 0.25
+        xmax = max(st, math.ceil(mx / st - 1e-9) * st)
+        rows = []
+        for k in locs:
+            e = LO(k)['slam']['position_m']
+            rows.append((NAME[k].replace(' (owned)', ''), e,
+                         f'{NAME[k]}: position error lowest {e["min"]:.3f} m, 5th pct {e["p5"]:.3f}, 25th {e["p25"]:.3f}, '
+                         f'median {e["p50"]:.3f}, 75th {e["p75"]:.3f}, 95th {e["p95"]:.3f}, highest {e["max"]:.3f} m'))
+        dr = [LO(k)['dead_reckoning']['position_m'] for k in locs]
+        p.append('<h3>7. Position error over the lap</h3><figure>' +
+                 dist_chart('c7', 'Position error of the car\'s own pose over the lap, distribution per lidar',
+                            'One row per lidar, metres from the true position; the table below has the numbers.',
+                            rows, xmax, digits=2, step=st) +
+                 f'<figcaption>The recorded lap of each lidar (the one in the videos): distance between the car\'s estimate '
+                 f'and its true position, one value every 0.5 m of the lap. '
+                 f'For scale: odometry alone (no lidar) reached a median of '
+                 f'{statistics.median(d["p50"] for d in dr):.2f} m and at worst {max(d["max"] for d in dr):.2f} m '
+                 'over the same laps.</figcaption></figure>')
+        ser = [(k, LO(k)['trace']['s_m'], LO(k)['trace']['slam_position_m'], None)
+               for k in TRACE_SET if k in locs]
+        top = max(max(v) for _, _, v, _ in ser)
+        p.append('<h3>8. Position error along the lap</h3><figure>' +
+                 trace_chart('c8', 'Position error at each point of the lap',
+                             'Lines per lidar and for odometry alone; x is the distance driven, y the error in metres.',
+                             ser, lap, [(short.get(lab, lab), s_) for lab, s_ in feat_s],
+                             ylabel='position error, m', ystep=0.05 if top <= 0.4 else 0.1, digits=2) +
+                 '<figcaption>Hover for every line\'s value at that point. Each line is one lap (the recorded one); table '
+                 '10 shows how much laps differ. For scale, odometry alone on the same laps drifted with distance and '
+                 'swung in the hairpins, where an error in heading turns into position, up to '
+                 f'{max(LO(k)["dead_reckoning"]["position_m"]["max"] for k in locs):.2f} m: off the top of this chart '
+                 'by several times.</figcaption></figure>')
+        body = []
+        for k in locs:
+            L_ = LO(k)
+            e, d, m_ = L_['slam'], L_['dead_reckoning'], L_.get('map') or {}
+            sc = L_.get('scans') or {}
+            body.append('<tr' + (' class="atx"' if k == atx else '') + f'><td>{esc(NAME[k])}</td>' +
+                        ''.join(f'<td class="num">{e["position_m"][q]:.2f}</td>' for q in ('p50', 'p95', 'max')) +
+                        f'<td class="num">{e["cross_abs_m"]["p95"]:.2f}</td>'
+                        f'<td class="num">{e["heading_abs_deg"]["p95"]:.2f}</td>'
+                        f'<td class="num">{e["final"]["position_m"]:.2f}</td>'
+                        f'<td class="num">{m_.get("mapped", 0)}/{m_.get("true_cones", 0)}</td>'
+                        f'<td class="num">{fmt((m_.get("error_m") or {}).get("p95"), 2)}</td>'
+                        f'<td class="num">{m_.get("false_on_track", "–")}</td>'
+                        f'<td class="num">{m_.get("false_off_track", "–")}</td>'
+                        f'<td class="num">{fmt((sc.get("detections") or {}).get("p50"), 0)}</td>'
+                        f'<td class="num">{d["position_m"]["max"]:.2f}</td></tr>')
+        p.append('<h3>9. Every lidar</h3><div class="tw"><table><thead><tr><th rowspan="2">Lidar</th>'
+                 '<th colspan="3">Position error, m</th><th rowspan="2" class="num">Cross-track 95th, m</th>'
+                 '<th rowspan="2" class="num">Heading 95th, °</th><th rowspan="2" class="num">At the finish, m</th>'
+                 '<th colspan="4">SLAM cone map</th><th rowspan="2" class="num">Cones / scan</th>'
+                 '<th rowspan="2" class="num">Odometry alone, worst, m</th></tr><tr>'
+                 '<th class="num">median</th><th class="num">95th</th><th class="num">worst</th>'
+                 '<th class="num">cones mapped</th><th class="num">error 95th, m</th><th class="num">false, on track</th>'
+                 '<th class="num">false, off track</th></tr></thead><tbody>' + ''.join(body) + '</tbody></table></div>'
+                 f'<p class="note">Every lidar delivered all its scans: '
+                 f'{min((LO(k).get("scans") or {}).get("count", 0) for k in locs)}–'
+                 f'{max((LO(k).get("scans") or {}).get("count", 0) for k in locs)} in the lap (10 a second). '
+                 'Cross-track is sideways from the car\'s true heading, the part that puts a car over a '
+                 'cone row. A mapped cone is a SLAM cone within 1 m of a true one, paired one to one. The start line\'s big '
+                 'orange cones stand in pairs 0.6 m apart and are mapped as one each, so two are always unmapped. '
+                 '"False, off track" are map cones more than 5 m from the driven line: ground returns that Gazebo\'s '
+                 'GPU lidar puts a few centimetres above the ground near the horizon of the long-range lidars. A real lidar '
+                 'does not do this, and none of them lies on the track. '
+                 + tail_note(locs, lambda k: (LO(k).get('laps') or {}).get('laps') or [], {k: esc(NAME[k]) for k in locs})
+                 + '</p>')
+        rep = [k for k in locs if (LO(k).get('laps') or {}).get('n', 0) > 1]
+        if rep:
+            rng_ = lambda d: f'{d["min"]:.2f} · {d["median"]:.2f} · {d["max"]:.2f}' if d else '–'  # noqa: E731
+            body = ''.join('<tr' + (' class="atx"' if k == atx else '') + f'><td>{esc(NAME[k])}</td>'
+                           f'<td class="num">{LO(k)["laps"]["n"]}</td>' +
+                           ''.join(f'<td class="num">{rng_(LO(k)["laps"].get(q))}</td>'
+                                   for q in ('p50', 'p95', 'max', 'final', 'map_error_p95')) + '</tr>'
+                           for k in rep)
+            n_laps = max(LO(k)['laps']['n'] for k in rep)
+            p.append('<h3>10. Lap to lap</h3><div class="tw"><table><thead><tr><th>Lidar</th>'
+                     '<th class="num">Laps</th><th class="num">Median error, m</th><th class="num">95th, m</th>'
+                     '<th class="num">Worst, m</th><th class="num">At the finish, m</th>'
+                     '<th class="num">Map error 95th, m</th></tr></thead><tbody>' + body + '</tbody></table></div>'
+                     f'<p class="note">Each lidar drove the lap {n_laps} times: the recorded lap above, and more '
+                     'without the windows, each with another noise seed for the CAN and IMU (Gazebo\'s lidar noise '
+                     'differs every lap anyway). Each cell is lowest · median · highest over those laps. The SLAM '
+                     'is a loop: a small difference early can change what it pairs later, so one lap alone can be '
+                     'lucky or unlucky. The spread shows how far to trust the order.</p>')
+
+        # ---- map building
+        mlap = [k for k in locs if (LO(k).get('laps') or {}).get('n_map', 0) > 0]
+        if mlap:
+            ML = lambda k: LO(k)['laps']  # noqa: E731
+            per = lambda k, q: [r[q] for r in ML(k)['laps'] if r.get(q) is not None]  # noqa: E731
+            ranked = sorted(mlap, key=lambda k: -ML(k)['ahead_p50']['median'])
+            rank = tiers(ranked, lambda k: per(k, 'ahead_p50'))
+            n_map = min(ML(k)['n_map'] for k in mlap)
+            n_all = min(ML(k)['n'] for k in mlap)
+            p.append(f'''<h2 id="map">Map building</h2>
+<p>On lap 1 the planner drives on the SLAM's cone map, so the score for map building is how much of the track ahead
+that map gets right. <b>Map ahead</b>: every 0.5 m of the lap, the distance along the track to the first cone ahead
+that the map does not hold within {MAP_TOL} m of where it really is. Both positions are taken relative to the car: the map cone
+from the car's own pose, the true cone from the true pose, because that is where the planner puts it. A false map cone
+on the track ends it too. It is chart 1's "known ahead", which asks only whether the lidar's rays reached a cone,
+after the detector, the SLAM and the car's own pose have had their say. The lidars below are ranked by its median
+over the lap.</p>
+<p>Why {MAP_TOL} m: the track can be 3 m wide ({link("FS-AI 2026 rules, D8.1, p. 33", FS_AI + "#page=33")}) and the ADS-DV
+is 1.43 m wide ({link("ADS-DV Specifications & Dimensions, §5", ADS_SPEC)}). That leaves 0.79 m each side, and {MAP_TOL} m is
+a third of it, about one cone base (228 mm, {link("cones specification, p. 2", CONE_SPEC + "#page=2")}). The table also gives the
+score at 0.1 m and 0.5 m, so the ranking can be checked against the choice.</p>''')
+            rows = []
+            for k in mlap:
+                d_ = ML(k)['map_pooled']['ahead_m']
+                rows.append((NAME[k].replace(' (owned)', ''), d_,
+                             f'{NAME[k]}: map ahead lowest {fmt(d_["min"])} m, 5th pct {fmt(d_["p5"])}, 25th {fmt(d_["p25"])}, '
+                             f'median {fmt(d_["p50"])}, 75th {fmt(d_["p75"])}, 95th {fmt(d_["p95"])}, highest {fmt(d_["max"])} m'))
+            mx = max(r[1]['max'] for r in rows)
+            mx = math.ceil(mx / (25 if mx > 120 else 10)) * (25 if mx > 120 else 10)
+            p.append('<h3>11. Map ahead over lap 1</h3><figure>' +
+                     dist_chart('c11', 'Map ahead over lap 1, distribution per lidar',
+                                f'One row per lidar, metres along the track to the first cone the map does not hold within {MAP_TOL} m; '
+                                'table 13 has the numbers.', rows, mx) +
+                     f'<figcaption>All {n_map} map laps of each lidar together, one value every 0.5 m, up to the point where '
+                     'that lap\'s map held every cone; nothing capped.</figcaption></figure>')
+            ser = []
+            for k in TRACE_SET:
+                if k not in mlap or not ML(k).get('map_trace'):
+                    continue
+                tr_ = ML(k)['map_trace']
+                done = tr_.get('complete_at_m')
+                keep = [i for i, a_ in enumerate(tr_['s_m']) if done is None or a_ < done]
+                ser.append((k, [tr_['s_m'][i] for i in keep], [tr_['ahead_m'][i] for i in keep], done))
+            if ser:
+                p.append('<h3>12. Map ahead along the lap</h3><figure>' +
+                         trace_chart('c12', 'Map ahead at each point of lap 1',
+                                     'Lines per lidar; x is the distance driven, y the track ahead the map holds within '
+                                     f'{MAP_TOL} m.', ser, lap, [(short.get(lab, lab), s_) for lab, s_ in feat_s]) +
+                         '<figcaption>One map lap per lidar. Hover for every line\'s value at that point. Each drop is the car '
+                         'reaching the first cone the map does not yet hold well enough; an open circle marks where the whole '
+                         'map was good.</figcaption></figure>')
+            rng_ = lambda d, dg=1: f'{d["min"]:.{dg}f} · {d["median"]:.{dg}f} · {d["max"]:.{dg}f}' if d else '–'  # noqa: E731
+            med = lambda k, q, dg=1: fmt((ML(k).get(q) or {}).get('median'), dg)  # noqa: E731
+            body = []
+            for k in ranked:
+                pool = ML(k)['map_pooled']
+                body.append('<tr' + (' class="atx"' if k == atx else '') + f'><td class="num">{rank[k]}</td>'
+                            f'<td>{esc(NAME[k])}</td><td class="num">{ML(k)["n_map"]}</td>'
+                            f'<td class="num">{rng_(ML(k)["ahead_p50"])}</td>'
+                            f'<td class="num">{med(k, "ahead_p5")}</td>'
+                            f'<td class="num">{med(k, "ahead_tight_p50")}</td>'
+                            f'<td class="num">{med(k, "ahead_loose_p50")}</td>'
+                            f'<td class="num">{fmt(ka(k))}</td>'
+                            f'<td class="num">{med(k, "entered_p50")}</td>'
+                            f'<td class="num">{med(k, "entered_p5")}</td>'
+                            f'<td class="num">{fmt((pool.get("local_error_m") or {}).get("p95"), 2)}</td>'
+                            f'<td class="num">{med(k, "map_error_p95", 2)}</td>'
+                            f'<td class="num">{fmt((ML(k).get("false_on_track") or {}).get("max"), 0)}</td>'
+                            f'<td class="num">{fmt((ML(k).get("duplicates") or {}).get("max"), 0)}</td></tr>')
+            p.append('<h3>13. Map score, every lidar</h3><div class="tw"><table><thead><tr>'
+                     '<th rowspan="2" class="num">Rank</th><th rowspan="2">Lidar</th><th rowspan="2" class="num">Laps</th>'
+                     f'<th colspan="4">Map ahead, m (median of the lap unless marked)</th>'
+                     '<th rowspan="2" class="num">Rays reached, chart 1, median, m</th>'
+                     '<th colspan="2">Cone enters the map, m ahead</th>'
+                     '<th rowspan="2" class="num">Car-relative error, 95th, m</th>'
+                     f'<th colspan="3">Map at the end of the lap, all {n_all} laps</th></tr><tr>'
+                     f'<th class="num">{MAP_TOL} m: lowest · median · highest lap</th><th class="num">{MAP_TOL} m, 5th pct</th>'
+                     '<th class="num">0.1 m</th><th class="num">0.5 m</th>'
+                     '<th class="num">median</th><th class="num">5th pct</th>'
+                     '<th class="num">error 95th, m</th><th class="num">false on track</th><th class="num">twice</th>'
+                     '</tr></thead><tbody>' + ''.join(body) + '</tbody></table></div>'
+                     f'<p class="note">Ranked by map ahead ({MAP_TOL} m, median of the lap, median over the laps). Lidars share a rank '
+                     'where their laps overlap: a lidar ranks below a group only if its best lap is short of every lap in that group. '
+                     'Map ahead and "cone enters the map" are medians over the map laps (the first map-ahead column also gives '
+                     'the lowest and highest lap); car-relative error pools every map lap. '
+                     f'Each lidar drove {n_map} laps for this with the map recorded after every scan, each with its own noise seed; '
+                     f'the map at the end of the lap is recorded on all {n_all} laps: its error is the median over them, and false '
+                     'cones and cones mapped twice are the most in any one lap. '
+                     + tail_note(mlap, lambda k: ML(k)['laps'], {k: esc(NAME[k]) for k in mlap}) +
+                     '"Rays reached" is from the recorded lap. '
+                     '"Cone enters the map" is how far the car still had to drive along lap 1 to reach each cone when the map '
+                     f'first held it within {MAP_TOL} m (5th pct: the latest cones). Car-relative error is the error of every mapped cone up to 30 m ahead, '
+                     'as the planner sees it. The start line\'s big orange cones stand in pairs 0.6 m apart, '
+                     'closer than the 1 m the SLAM keeps between its cones, so each pair counts as one cone. '
+                     'The detector counts a cluster of at least 2 points standing 8 cm or more above the ground as a cone; '
+                     'in Gazebo nothing but the cones is out there to be mistaken for one, which favours the lidars that '
+                     'put a few points on cones far away.' + (' Table 14 repeats the test with a stricter detector.'
+                     if any(LO(k).get('variants') for k in mlap) else '') + '</p>')
+            vnames = sorted({v for k in mlap for v in (LO(k).get('variants') or {})})
+            for vn in vnames:
+                vk = [k for k in mlap if vn in (LO(k).get('variants') or {})]
+                V = lambda k: LO(k)['variants'][vn]  # noqa: E731
+
+                def pair_(k, q, how=statistics.median):
+                    """q over the main laps with the variant's seeds, and over the variant's laps."""
+                    runs = {r['run'] for r in V(k)['laps']}
+                    a_ = [r[q] for r in ML(k)['laps'] if r['run'] in runs and r.get(q) is not None]
+                    b_ = [r[q] for r in V(k)['laps'] if r.get(q) is not None]
+                    return (how(a_) if a_ else None), (how(b_) if b_ else None)
+                vr = sorted(vk, key=lambda k: -V(k)['ahead_p50']['median'])
+                vrank = tiers(vr, lambda k: [r['ahead_p50'] for r in V(k)['laps'] if r.get('ahead_p50') is not None])
+                lr = sorted(vk, key=lambda k: V(k)['p95']['median'])
+                cells = lambda k, q, dg, how=statistics.median: ''.join(  # noqa: E731
+                    f'<td class="num">{fmt(v, dg)}</td>' for v in pair_(k, q, how))
+                body = ''.join(
+                    '<tr' + (' class="atx"' if k == atx else '') + f'><td class="num">{vrank[k]}</td><td>{esc(NAME[k])}</td>'
+                    f'<td class="num">{V(k)["n"]}</td>'
+                    f'<td class="num">{fmt(pair_(k, "ahead_p50")[0])}</td>'
+                    f'<td class="num">{rng_(V(k)["ahead_p50"])}</td>'
+                    + cells(k, 'p95', 3) + f'<td class="num">{lr.index(k) + 1}</td>'
+                    + cells(k, 'map_error_p95', 2) + cells(k, 'false_on_track', 0, max) + '</tr>'
+                    for k in vr)
+                p.append(f'<h3>14. With a stricter detector: {esc(variant_label(vn))}</h3><div class="tw"><table><thead><tr>'
+                         '<th rowspan="2" class="num">Rank</th><th rowspan="2">Lidar</th><th rowspan="2" class="num">Laps</th>'
+                         f'<th colspan="2">Map ahead, {MAP_TOL} m, median, m</th><th colspan="3">Position error 95th, m (median over laps)</th>'
+                         '<th colspan="2">Map error 95th at the end, m</th><th colspan="2">False cones on the track, most in a lap</th></tr><tr>'
+                         '<th class="num">as above</th><th class="num">stricter: lowest · median · highest lap</th>'
+                         '<th class="num">as above</th><th class="num">stricter</th><th class="num">stricter, rank</th>'
+                         '<th class="num">as above</th><th class="num">stricter</th>'
+                         '<th class="num">as above</th><th class="num">stricter</th></tr></thead><tbody>' + body +
+                         '</tbody></table></div>'
+                         f'<p class="note">The same laps (same noise seeds) with the cone detector asking for more points per '
+                         f'cluster ({esc(variant_label(vn))}, still 8 cm tall), close to chart 1\'s main rule. Everything else '
+                         'is as above; every "as above" cell is over the laps with those same seeds. Ranked by map ahead with '
+                         'the stricter detector. ' + drift_note(vk, V, {k: esc(NAME[k].split(' (')[0]) for k in vk}) + '</p>')
+
     # ---- videos
     p.append('<h2>Videos</h2><p>Each lidar\'s lap, recorded on the RTX 5060 laptop while the numbers above were collected: '
              'Gazebo on one side, and RViz with the lidar\'s point cloud and a marker over each cone. A cone\'s marker turns green '
@@ -699,6 +1170,12 @@ rain, sun or dust. Real lidars lose some returns at range, more so the ones with
 fewer frames per metre; the distances would shrink a little for every lidar.</li>
 <li><b>Geometry only.</b> Cone colour, intensity and a detector's own false positives are not modelled; the rules stand in
 for a detector.</li>
+<li><b>Localisation: tidy sensors.</b> The car stays level, so the accelerometer never feels gravity from pitch or roll.
+Wheels slip only as the simulator's tyre model allows. CAN, IMU and lidar share one clock with no delay. Each Gazebo
+scan is taken at one instant, where a real spinning lidar sweeps for a tenth of a second while the car moves. The
+1% tyre error is an assumption, and the IMU's noise and bias are its datasheet figures. Real numbers will be worse
+for every lidar. What these runs give is the lidars side by side under the same conditions, with the lap-to-lap
+spread showing which differences are real.</li>
 </ul>
 <script>
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {{
@@ -717,8 +1194,8 @@ document.querySelectorAll('.trace').forEach(box => {{
     let h = '<b>' + Math.round(s) + ' m into the lap</b>';
     D.series.forEach(se => {{
       let i = 0; while (i < se.s.length - 1 && se.s[i + 1] <= s) i++;
-      const val = (se.done !== null && s >= se.done) ? 'every cone mapped' : se.v[i].toFixed(1) + ' m';
-      h += '<div><i style="background:var(--c' + se.slot + ')"></i>' + se.name + ': ' + val + '</div>';
+      const val = (se.done !== null && s >= se.done) ? 'every cone mapped' : se.v[i].toFixed(D.digits) + ' ' + D.unit;
+      h += '<div><i style="background:' + se.colour + '"></i>' + se.name + ': ' + val + '</div>';
     }});
     tip.innerHTML = h; tip.hidden = false;
     const px = (ev.clientX - r.left);

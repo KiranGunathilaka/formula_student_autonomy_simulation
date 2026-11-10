@@ -37,11 +37,17 @@ Every frame keeps the points and the channels on every cone, so any detection ru
   cones per frame cones meeting the rule at each point of the lap (5th, 50th, 95th
                   percentile), and metres driven with fewer than 2
   points vs range mean points and channels on a cone in view, by range band
+A Gazebo run that also has localization.npz (sim.launch.py localization:=slam) gets
+its localisation errors too (localization.py: position, along/cross-track, heading,
+map, map building, against dead reckoning alone), under `localization`; with
+--repeats the spread over repeat laps (`localization.laps`), and with --variant the
+same for a variant of the stack (`localization.variants`).
 Writes <out>/lidar_stats.json (and prints a summary).
 """
 
 import argparse
 import csv
+import glob
 import json
 import math
 import os
@@ -49,6 +55,7 @@ import sys
 
 import numpy as np
 
+from falcon_evaluation import localization
 from falcon_evaluation.coverage import RANGE_BINS, CoverageAccumulator
 
 COLOURS = {'blue': 1, 'yellow': 2, 'orange': 3, 'big_orange': 4}
@@ -343,6 +350,13 @@ def main():
     ap.add_argument('--runs', nargs='+', default=None,
                     help='Gazebo runs (cone_coverage folders with frames.npz) to analyse '
                          'instead of the offline drive')
+    ap.add_argument('--repeats', default=None,
+                    help='folder of repeat laps (<lidar>_s<seed>/localization.npz, from '
+                         'scripts/localization_repeats.sh): their localisation numbers are '
+                         'added to each lidar as `localization.laps`')
+    ap.add_argument('--variant', nargs=2, action='append', default=[], metavar=('NAME', 'DIR'),
+                    help='laps of a variant of the stack (same layout as --repeats, e.g. a '
+                         'stricter detector): added as `localization.variants.NAME`')
     ap.add_argument('--tracks', nargs='+', default=['small_track'])
     ap.add_argument('--lidars', nargs='+',
                     default=['hesai_atx', 'velodyne_vlp16@0.70', 'ouster_os1_64@0.70'])
@@ -368,10 +382,22 @@ def main():
                      range_max_m=info['lidar'].get('range_max_m'),
                      target_speed=info.get('target_speed'),
                      duration_s=round(float(frames[-1, 0]), 1))
+            loc = localization.load(run)
+            if loc is not None:
+                if a.repeats:
+                    loc['laps'] = localization.laps(
+                        [run] + sorted(glob.glob(os.path.join(a.repeats, r['lidar'] + '_s*'))))
+                for name, vdir in a.variant:
+                    v = localization.laps(sorted(glob.glob(os.path.join(vdir, r['lidar'] + '_s*'))))
+                    if v['n']:
+                        loc.setdefault('variants', {})[name] = v
+                r['localization'] = loc
             results.append(r)
             print(f"{r['lidar']:28s} {r['lap_m']:.0f} m lap, {len(frames)} scans"
                   f"{'' if complete else ' (INCOMPLETE LAP)'}  {summary_line(r)}",
                   file=sys.stderr)
+            if loc is not None:
+                print(f"{'':28s} localisation: {localization.summary_line(loc)}", file=sys.stderr)
     else:
         from falcon_description import config as cfg
         vehicle = cfg.load_vehicle(a.vehicle)

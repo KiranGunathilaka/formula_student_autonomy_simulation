@@ -100,7 +100,8 @@ def _lidar_xml(lidar, mount, sensor_type, points_topic):
 def build(vehicle, lidar, *, simulate_perception=True, lidar_enabled=True,
           camera_enabled=True, teleop_camera=False, sensor_type='gpu_ray',
           vehicle_model='DynamicBicycle', command_mode='velocity', publish_tf=True,
-          sim_cone_range=20.0, sim_cone_fov_deg=180.0, points_topic='/lidar/points'):
+          sim_cone_range=20.0, sim_cone_fov_deg=180.0, points_topic='/lidar/points',
+          truth_frame='base_footprint'):
     """Return the URDF as a string.
 
     vehicle, lidar: dicts from config.load_vehicle / config.load_lidar.
@@ -108,6 +109,9 @@ def build(vehicle, lidar, *, simulate_perception=True, lidar_enabled=True,
     sim_cone_fov_deg / sim_cone_range: the view of those simulated cones.  Kept
     independent of the lidar under test so that runs with different lidars drive the
     same way when they drive on /cones.
+    truth_frame: child frame of the simulator's true-pose TF (map -> truth_frame).
+    base_footprint when the stack uses the true pose; another name (base_footprint_gt)
+    when the stack's localisation publishes map -> odom -> base_footprint itself.
     """
     racecar = get_package_share_directory('eufs_racecar')
     models = get_package_share_directory('eufs_models')
@@ -123,6 +127,7 @@ def build(vehicle, lidar, *, simulate_perception=True, lidar_enabled=True,
         'vehicle_model': vehicle_model,
         'command_mode': command_mode,
         'publish_tf': str(publish_tf).lower(),
+        'truth_frame': truth_frame,
         'pub_ground_truth': 'true',
         'simulate_perception': str(simulate_perception).lower(),
         'chassis_mesh': vehicle['chassis_mesh'],

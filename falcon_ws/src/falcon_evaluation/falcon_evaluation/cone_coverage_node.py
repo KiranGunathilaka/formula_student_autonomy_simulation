@@ -18,9 +18,12 @@ shapes (cone_shape:=eufs); coverage_source:=both in sim.launch.py runs the two
 together.  Ground returns (sim.launch.py ground:=true) lie below the 3 cm ground
 clearance in coverage.py and are not counted.
 
-The pose comes from TF map -> base_footprint, which EUFS publishes from the
-simulator's state (its pose noise is zero in eufs_models/config/noise.yaml), so the
-cones are placed exactly; only the lidar is under test.
+The pose comes from TF map -> `pose_frame` (default base_footprint), which EUFS
+publishes from the simulator's state (its pose noise is zero in
+eufs_models/config/noise.yaml), so the cones are placed exactly; only the lidar is
+under test.  When the stack localises itself (sim.launch.py localization:=slam),
+base_footprint is the stack's estimate and the true pose is base_footprint_gt, which
+the launch passes as pose_frame; the lidar mount still comes from base_frame.
 
 Outputs, in <output_dir>/<run_name>/:
   summary.json      totals, per colour, first-detection range, recall by range
@@ -102,6 +105,7 @@ class ConeCoverageNode(Node):
         p('track_topic', '/ground_truth/track')
         p('map_frame', 'map')
         p('base_frame', 'base_footprint')
+        p('pose_frame', '')          # frame of the true pose; '' = base_frame
         p('channels_deg', [0.0])
         p('hfov_deg', 360.0)
         p('hcentre_deg', 0.0)
@@ -129,6 +133,7 @@ class ConeCoverageNode(Node):
 
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self._map, self._base = g('map_frame'), g('base_frame')
+        self._pose = g('pose_frame') or self._base
         self._laps_target = int(g('laps'))
         self._start_r = float(g('start_radius_m'))
         self._min_lap = float(g('min_lap_distance_m'))
@@ -234,14 +239,14 @@ class ConeCoverageNode(Node):
                 t = tf.transform.translation
                 self._mount = (quat_to_R(tf.transform.rotation), np.array([t.x, t.y, t.z]))
             stamp = rclpy.time.Time.from_msg(msg.header.stamp)
-            if not self._tf_buffer.can_transform(self._base, self._map, stamp):
+            if not self._tf_buffer.can_transform(self._pose, self._map, stamp):
                 if (self.get_clock().now() - stamp).nanoseconds > 1e9:
                     self._pending.popleft()
                     self._clouds_dropped += 1
                     continue
                 return
             self._pending.popleft()
-            tf = self._tf_buffer.lookup_transform(self._base, self._map, stamp)
+            tf = self._tf_buffer.lookup_transform(self._pose, self._map, stamp)
             q = tf.transform.rotation
             yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
             c, s = math.cos(yaw), math.sin(yaw)
@@ -255,7 +260,7 @@ class ConeCoverageNode(Node):
     def _pose_tick(self):
         if self._acc is None or self._done:
             return
-        tf = self._lookup(self._base, self._map, rclpy.time.Time())
+        tf = self._lookup(self._pose, self._map, rclpy.time.Time())
         if tf is None:
             return
         q = tf.transform.rotation
@@ -268,7 +273,7 @@ class ConeCoverageNode(Node):
     def _raycast_tick(self):
         if self._acc is None or self._done:
             return
-        tf = self._lookup(self._base, self._map, rclpy.time.Time())
+        tf = self._lookup(self._pose, self._map, rclpy.time.Time())
         if tf is None:
             return
         q = tf.transform.rotation

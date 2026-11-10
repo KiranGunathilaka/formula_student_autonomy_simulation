@@ -18,9 +18,13 @@
 # cones (the same drive for every lidar); the coverage node counts Gazebo's lidar
 # points on every cone in every frame and writes runs/<OUT_NAME>/<lidar>/frames.npz
 # when the lap is done, which ends that run.  Cones in RViz turn green when they get
-# 10 points on 2 channels.
+# 10 points on 2 channels.  The car drives on its own pose (localization:=slam: ADS-DV
+# CAN and MTi-8 odometry, cone SLAM on this lidar), and localization_eval writes
+# localization.json / .npz next to frames.npz, which the page compares too.
 #
-# Videos: docs/videos/lidar_<lidar>.mp4 (scripts/record_screen.sh, needs ffmpeg).
+# Videos: docs/videos/lidar_<lidar>.mp4 (scripts/record_screen.sh, needs ffmpeg).  The
+# whole screen is recorded: leave the machine alone while it runs (with wmctrl
+# installed the script raises Gazebo and RViz first).
 # Results: runs/<OUT_NAME>/lidar_stats.json and docs/lidar_statistics.html.
 
 set -u
@@ -65,8 +69,9 @@ if in_container "pgrep -f '[g]zserver' >/dev/null"; then
 fi
 
 # 2. Build what this test uses.
-in_container "source /workspace/docker/build.sh falcon_description falcon_planning \
-falcon_evaluation falcon_bringup" || exit 1
+in_container "source /workspace/docker/build.sh falcon_msgs falcon_description falcon_planning \
+falcon_cone_perception falcon_sim_sensors falcon_localization falcon_evaluation falcon_bringup" \
+    || exit 1
 
 # 3. One lap per lidar.
 mkdir -p "${ROOT}/docs/videos"
@@ -85,6 +90,11 @@ coverage_output_dir:=/root/falcon_runs/${OUT_NAME} coverage_run_name:=${L} \
     REC=""
     if [ "${RECORD}" = "1" ]; then
         sleep "${RECORD_DELAY}"
+        # Bring Gazebo, then RViz, to the front: the recording is of the whole screen, and
+        # a window left in front records instead (sudo apt install wmctrl to enable).
+        if command -v wmctrl >/dev/null; then
+            wmctrl -a Gazebo; sleep 0.5; wmctrl -a RViz
+        fi
         setsid "${SCRIPT_DIR}/record_screen.sh" "${ROOT}/docs/videos/lidar_${L}.mp4" &
         REC=$!
     fi
@@ -100,8 +110,8 @@ coverage_output_dir:=/root/falcon_runs/${OUT_NAME} coverage_run_name:=${L} \
     [ -n "${REC}" ] && kill -TERM -- "-${REC}" 2>/dev/null && wait "${REC}" 2>/dev/null
     # Nothing of this run may drive the next one.
     in_container "pkill -f '[g]zserver|[g]zclient|[i]nstall/lib/|[r]viz2' ; sleep 3; true"
-    grep -h "Lap 1 done\|report written\|partial report" \
-        "${ROOT}/runs/${OUT_NAME}_${L}.log" | tail -2
+    grep -h "report written\|partial report\|position p50" \
+        "${ROOT}/runs/${OUT_NAME}_${L}.log" | tail -4 | cut -c1-300
 done
 
 # 4. Statistics from every finished run in runs/<OUT_NAME> (so re-running one lidar

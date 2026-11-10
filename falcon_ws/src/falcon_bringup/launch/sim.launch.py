@@ -19,6 +19,16 @@ mode       autonomy: map builder + planner + pure pursuit drive the car
            none:     just the simulator
 cones      sim:        drive on the simulator's cones (/cones), no perception needed
            perception: drive on /falcon/fused_cones (YOLO + depth + lidar + fuser)
+localization
+           slam (default): the stack finds its own pose.  falcon_sim_sensors stands in
+                       for the ADS-DV CAN (four wheel rpm, steer angle) and an MTi-8 IMU;
+                       the odometry EKF publishes odom -> base_footprint and the cone
+                       EKF-SLAM, on lidar_cone_detector_3d's cones, map -> odom.  The
+                       simulator's true pose is map -> base_footprint_gt, which only the
+                       evaluation reads: localization_eval writes localization.json /
+                       .npz after `coverage_laps` laps next to the coverage report, and
+                       the coverage counter places cones with the true pose.
+           ground_truth: the simulator publishes map -> base_footprint (no lidar needed)
 coverage   true: run the cone coverage metric; report after `coverage_laps` laps in
            coverage_output_dir (default ~/falcon_runs).  coverage_source:=raycast (default)
            casts the lidar profile's rays itself from the true pose (exact; the Gazebo
@@ -58,13 +68,18 @@ ARGS = [
     ('lidar_rate_hz', '', 'override lidar frame rate'),
     ('sim_cones_fov_deg', '180', 'view of the simulated /cones (independent of the lidar)'),
     ('ground', 'true', 'visible ground: lidar ground returns (rings), cameras see asphalt'),
+    ('localization', 'slam', 'slam (odometry EKF + lidar cone EKF-SLAM) | ground_truth (the simulator\'s pose)'),
+    ('wheel_radius_error', '0.01', 'simulated tyre: true rolling radius vs the one the odometry assumes (0.01 = 1 % larger)'),
+    ('sensor_seed', '1', 'noise seed of the simulated CAN and IMU (repeat a run with another seed)'),
+    ('detector_min_points', '2', 'localization:=slam: fewest lidar points a cluster needs to count '
+     'as a cone (it must also stand at least 8 cm tall)'),
     ('coverage', 'false', 'run the cone coverage metric'),
     ('coverage_laps', '1', 'write the coverage report after this many laps'),
     ('coverage_source', 'raycast', 'raycast (exact rays from the true pose) | pointcloud (Gazebo lidar) | both'),
     ('coverage_cone_shape', 'fs', 'fs (rulebook cone sizes) | eufs (the Gazebo cone meshes)'),
     ('coverage_min_points', '3', 'points on a cone to count it detected'),
     ('coverage_min_rings', '1', 'distinct lidar channels on a cone to count it detected'),
-    ('coverage_exit_on_finish', 'false', 'end the whole launch when the report is written'),
+    ('coverage_exit_on_finish', 'false', 'end the whole launch when the coverage and localisation reports are written'),
     ('coverage_output_dir', '', 'default $FALCON_RUNS_DIR or ~/falcon_runs'),
     ('coverage_run_name', '', 'default <vehicle>_<lidar>_<time>'),
     ('gazebo_gui', 'true', 'Gazebo window'),
@@ -163,6 +178,9 @@ def _setup(context):
         raise RuntimeError(f'mode:={mode}: use autonomy, teleop, both or none')
     if cones not in ('sim', 'perception'):
         raise RuntimeError(f'cones:={cones}: use sim or perception')
+    if a['localization'] not in ('slam', 'ground_truth'):
+        raise RuntimeError(f"localization:={a['localization']}: use slam or ground_truth")
+    slam = a['localization'] == 'slam'
 
     from falcon_description import config as cfg
     from falcon_description.urdf_builder import build, lidar_topics
@@ -173,18 +191,23 @@ def _setup(context):
     use_lidar, use_camera = on('use_lidar'), on('use_camera')
     if cones == 'perception' and not (use_lidar and use_camera):
         raise RuntimeError('cones:=perception needs use_lidar:=true and use_camera:=true')
+    if slam and not use_lidar:
+        raise RuntimeError('localization:=slam needs the lidar (use_lidar:=true), or use '
+                           'localization:=ground_truth')
+    truth_frame = 'base_footprint_gt' if slam else 'base_footprint'
     teleop = mode in ('teleop', 'both')
     autonomy = mode in ('autonomy', 'both')
 
     urdf = build(vehicle, lidar, simulate_perception=True, lidar_enabled=use_lidar,
                  camera_enabled=use_camera, teleop_camera=teleop,
                  sensor_type=a['lidar_sensor_type'],
-                 sim_cone_fov_deg=float(a['sim_cones_fov_deg']))
+                 sim_cone_fov_deg=float(a['sim_cones_fov_deg']), truth_frame=truth_frame)
     urdf_path = os.path.join('/tmp', f'falcon_{os.getpid()}.urdf')
     with open(urdf_path, 'w') as f:
         f.write(urdf)
 
     track_name, world, track_models, track_csv = _resolve_track(a['track'])
+
     x0, y0, yaw0 = _start_pose(track_csv)
     x0 = float(a['x']) if a['x'] else x0
     y0 = float(a['y']) if a['y'] else y0
@@ -209,11 +232,14 @@ def _setup(context):
     actions = [
         LogInfo(msg=f"[falcon sim] {vehicle['description']} on {track_name}"
                     f"{'' if track_models is None else f' (from {track_csv})'}, mode={mode}, "
-                    f"cones={cones}"),
+                    f"cones={cones}, localization={a['localization']}"),
         LogInfo(msg=f"[falcon sim] lidar: {cfg.lidar_summary(lidar) if use_lidar else 'off'}"),
         LogInfo(msg=f"[falcon sim] lidar mount x={lm['x']:.3f} z={lm['z']:.3f} m, pitch "
                     f"{lm['pitch_deg']:+.1f} deg; camera z={s['camera']['z']:.3f} m pitch "
                     f"{s['camera']['pitch_deg']:+.1f} deg; URDF {urdf_path}"),
+        # Big shared-memory segments, so dense lidar clouds arrive whole (see the file).
+        SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', os.path.join(
+            get_package_share_directory('falcon_bringup'), 'config', 'fastdds_sim.xml')),
         SetEnvironmentVariable('GAZEBO_MODEL_PATH', ':'.join(
             p for p in (track_models, os.path.join(tracks, 'models')) if p)),
         SetEnvironmentVariable('GAZEBO_RESOURCE_PATH', resources),
@@ -293,6 +319,36 @@ def _setup(context):
                               'target_speed': float(a['target_speed']), **sim_time}]),
         ]
 
+    # numpy's OpenBLAS starts a thread per core in every process; several numpy nodes
+    # next to Gazebo then starve each other.  One thread each, four for the SLAM's
+    # covariance update (7.5 ms a scan for 430 cones on four threads, 16.5 ms on one).
+    blas1 = {'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'}
+    if slam:
+        wheel = {'wheelbase': float(vehicle['wheelbase_m']), 'track': float(vehicle['track_m']),
+                 'wheel_radius': float(vehicle['wheel_diameter_m']) / 2, **sim_time}
+        actions += [
+            Node(package='falcon_sim_sensors', executable='vehicle_sensors_sim',
+                 name='vehicle_sensors_sim', output='screen', additional_env=blas1,
+                 parameters=[{**wheel, 'rolling_radius_error': float(a['wheel_radius_error']),
+                              'seed': int(a['sensor_seed'])}]),
+            Node(package='falcon_localization', executable='odometry_ekf', name='odometry_ekf',
+                 output='screen', additional_env=blas1, parameters=[wheel]),
+            Node(package='falcon_localization', executable='cone_slam', name='cone_slam',
+                 output='screen',
+                 additional_env={'OPENBLAS_NUM_THREADS': '4', 'OMP_NUM_THREADS': '4'},
+                 parameters=[{'initial_pose': [x0, y0, yaw0],
+                              'sensor_xy': [float(lm['x']), float(lm['y'])], **sim_time}]),
+        ]
+        if cones != 'perception':
+            # The SLAM's own lidar cone detector (cones:=perception already runs one).
+            # Range: the lidar's datasheet range, so no lidar is cut short.
+            actions.append(Node(
+                package='falcon_cone_perception', executable='lidar_cone_detector_3d.py',
+                name='lidar_cone_detector', output='screen', additional_env=blas1,
+                parameters=[{'body_box': body_box,
+                             'max_range_m': float(lidar['range']['max_m']),
+                             'min_points': int(a['detector_min_points']), **sim_time}]))
+
     if teleop:
         actions.append(Node(
             package='falcon_teleop', executable='keyboard_teleop', name='keyboard_teleop',
@@ -304,7 +360,8 @@ def _setup(context):
         raise RuntimeError(f"coverage_source:={a['coverage_source']}: use raycast, pointcloud or both")
     if on('coverage') and a['coverage_source'] != 'raycast' and not use_lidar:
         raise RuntimeError(f"coverage_source:={a['coverage_source']} needs use_lidar:=true")
-    if on('coverage'):
+    report_nodes = []          # (name, kwargs) of nodes that end the run when done
+    if on('coverage') or slam:
         run_name = a['coverage_run_name'] or None
         info = {
             'vehicle': {k: vehicle[k] for k in ('name', 'description', 'wheelbase_m',
@@ -317,7 +374,23 @@ def _setup(context):
             'lidar_mount': s['lidar'],
             'track': track_name, 'mode': mode, 'cones': cones,
             'target_speed': float(a['target_speed']),
+            'localization': a['localization'],
+            'wheel_radius_error': float(a['wheel_radius_error']) if slam else None,
+            'sensor_seed': int(a['sensor_seed']) if slam else None,
+            'detector_min_points': int(a['detector_min_points']) if slam else None,
         }
+        if not run_name:
+            import datetime
+            run_name = (f"{vehicle['name']}_{os.path.splitext(os.path.basename(lidar['_file']))[0]}"
+                        f"_{datetime.datetime.now():%Y%m%d_%H%M%S}")
+        out_dir = {'output_dir': a['coverage_output_dir']} if a['coverage_output_dir'] else {}
+    if slam:
+        report_nodes.append(('localization_eval', dict(
+            package='falcon_evaluation', executable='localization_eval',
+            parameters=[{'laps': int(a['coverage_laps']), 'run_name': run_name,
+                         'exit_on_finish': on('coverage_exit_on_finish'),
+                         'run_info_json': json.dumps(info), **out_dir, **sim_time}])))
+    if on('coverage'):
         params = {
             'channels_deg': [float(v) for v in lidar['channels_deg']],
             'hfov_deg': float(lidar['horizontal']['fov_deg']),
@@ -338,14 +411,10 @@ def _setup(context):
             if vehicle.get('occluder_box') else [0.0],
             'exit_on_finish': on('coverage_exit_on_finish'),
             'run_info_json': json.dumps(info),
+            'pose_frame': truth_frame,
+            **out_dir,
             **sim_time,
         }
-        if a['coverage_output_dir']:
-            params['output_dir'] = a['coverage_output_dir']
-        if not run_name:
-            import datetime
-            run_name = (f"{vehicle['name']}_{os.path.splitext(os.path.basename(lidar['_file']))[0]}"
-                        f"_{datetime.datetime.now():%Y%m%d_%H%M%S}")
         # both: the ray-cast and Gazebo's own cloud side by side on the same drive,
         # reports in <run>/raycast and <run>/pointcloud; the Gazebo one publishes
         # under /coverage/pointcloud/.
@@ -356,22 +425,25 @@ def _setup(context):
                        for t in ('markers', 'summary', 'write_report')], 1.4)]
         else:
             nodes = [('cone_coverage', a['coverage_source'], run_name, [], 0.6)]
-        exited = []
-
-        def _coverage_exit(event, context):
-            # End the launch once every coverage node has written its report.
-            exited.append(event.action.name)
-            if len(exited) == len(nodes):
-                return [Shutdown(reason='coverage report written')]
-            return None
-
         for name, source, run, remaps, marker_z in nodes:
-            actions.append(Node(
-                package='falcon_evaluation', executable='cone_coverage', name=name,
-                output='screen', parameters=[{**params, 'source': source, 'run_name': run,
-                                              'marker_z_m': marker_z}],
-                remappings=remaps,
-                on_exit=_coverage_exit if on('coverage_exit_on_finish') else None))
+            report_nodes.append((name, dict(
+                package='falcon_evaluation', executable='cone_coverage',
+                parameters=[{**params, 'source': source, 'run_name': run,
+                             'marker_z_m': marker_z}],
+                remappings=remaps)))
+
+    exited = []
+
+    def _report_exit(event, context):
+        # End the launch once every report node (coverage, localisation) is done.
+        exited.append(event.action.name)
+        if len(exited) == len(report_nodes):
+            return [Shutdown(reason='reports written')]
+        return None
+
+    for name, kw in report_nodes:
+        actions.append(Node(name=name, output='screen', additional_env=blas1, **kw,
+                            on_exit=_report_exit if on('coverage_exit_on_finish') else None))
 
     if on('rviz'):
         actions.append(Node(

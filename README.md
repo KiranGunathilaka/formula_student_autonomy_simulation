@@ -74,6 +74,8 @@ ros2 launch falcon_bringup sim.launch.py --show-args           # every argument
 | `camera_x/_y/_z/_roll_deg/_pitch_deg/_yaw_deg` | from the vehicle | camera mount for this run |
 | `lidar_sensor_type` | `gpu_ray` | `ray` raycasts on the CPU: exact but slow (see Troubleshooting) |
 | `lidar_h_samples` | profile | fewer columns per frame, for a slow PC |
+| `localization` | `slam` | `slam`: the stack finds its own pose (odometry EKF + lidar cone EKF-SLAM, see "Localisation"); `ground_truth`: the simulator's pose (no lidar needed) |
+| `wheel_radius_error` | `0.01` | simulated tyre: the true rolling radius is this much larger than the one the odometry assumes |
 | `coverage` | `false` | run the cone coverage metric (below) |
 | `coverage_source` | `raycast` | `raycast` (exact rays from the true pose), `pointcloud` (Gazebo's lidar) or `both` |
 | `gazebo_gui`, `rviz` | `true` | |
@@ -229,6 +231,28 @@ then runs `lidar_stats --runs` and `docs/build_lidar_statistics.py`. Results go 
 `runs/lidar_gazebo_<date>/`. Lidar ranges are the datasheet figures for a 10% target
 (profile comments), and no statistic is capped.
 
+The car drives each lap on its own pose (`localization:=slam`), so every run also writes
+`localization.json` / `.npz`, and the page compares the lidars on localisation error too.
+One lap per lidar is not enough for that comparison. The SLAM is a feedback loop, and
+two laps of the same lidar can differ by as much as two lidars do. So repeat each lidar
+headless with other noise seeds (about 3 minutes a lap; no windows, no recording):
+
+```bash
+OUT_NAME=lidar_loc_2026-11-09 SEEDS="2 3 4 5" scripts/localization_repeats.sh
+```
+
+It rebuilds `lidar_stats.json` with `--repeats` and the page, which then shows the
+lowest, median and highest of each number over the laps. Laps run since the map started
+being recorded after every scan (`/localization/landmark_points`) also give the
+map-building score.
+Every lidar delivers its full 10 frames a second: `sim.launch.py` gives every node a
+Fast DDS profile (`falcon_bringup/config/fastdds_sim.xml`) with 32 MB shared-memory
+segments. With the default 512 KB segment, a dense lidar's cloud (the ATX's is 3 MB a
+frame) went as UDP fragments, and losing one fragment lost the frame. The ATX then
+delivered between 0.6 and 8 frames a second, depending on load. A node started outside
+the launch (`ros2 topic echo` in another shell) still talks to the sim over UDP. To give
+it the large clouds whole, set the same `FASTRTPS_DEFAULT_PROFILES_FILE` for it too.
+
 ## Check Gazebo's lidar on your GPU (and record it)
 
 Gazebo's `gpu_ray` lidar renders the scene with OpenGL, so how good its cloud is depends
@@ -347,6 +371,58 @@ touches cones there whatever the planner does; the EUFS car gets round.
 
 If the car weaves, increase `lookahead_distance`; if it cuts corners, decrease it.
 
+## Localisation: the car finds its own pose
+
+With `localization:=slam` (the default) nothing in the stack reads the simulator's pose.
+The stack gets what the ADS-DV and the planned IMU give it:
+
+| Sensor | Simulated as (`falcon_sim_sensors`) | Source |
+|---|---|---|
+| ADS-DV wheel speeds | four wheels, unsigned whole rpm, every 10 ms, each wheel's rolling speed at its own Ackermann angle; tyre 1 % larger than the odometry assumes (`wheel_radius_error`) | VCU2AI_Speeds, ADS-DV Software Interface Specification v4.0 p. 9; uint16 rpm in `fs-ai_api.c` |
+| ADS-DV steer angle | bicycle-model angle in 0.1° steps | VCU2AI_Steer, SIS p. 9; 0.1 scaling in `fs-ai_api.c` |
+| Xsens MTi-8 IMU | gyro 0.003 °/s/√Hz, 6 °/h bias; accelerometer 70 µg/√Hz, 40 µg bias; 200 Hz; no orientation output | MTi-8 product leaflet (Movella, Feb 2025) |
+
+Both are published as the real drivers would: `/ros_can/wheel_speeds`
+(eufs_msgs/WheelSpeedsStamped, as the EUFS/Bristol `ros_can` bridge for the ADS-DV) and
+`/imu/data` (sensor_msgs/Imu, the Xsens ROS 2 driver's topic). Every run uses the same
+noise seed. The ADS-DV's own PCAN-GPS IMU and GPS (`fs_ai_api_imu`, `fs_ai_api_gps`) are
+not used.
+
+`falcon_localization`:
+
+- **`odometry_ekf`** (`odometry.py`): state x, y, yaw, v_x, v_y and the gyro's bias.
+  The IMU predicts at 200 Hz. Each CAN frame updates it with all four wheels: each wheel's
+  speed is the body velocity at that wheel along its heading, plus a soft "rear axle
+  does not slide" constraint. When all four wheels read 0 rpm, the gyro bias is learnt.
+  Publishes `/localization/odom` and TF `odom → base_footprint`.
+- **`cone_slam`** (`slam.py`): EKF-SLAM on `lidar_cone_detector_3d`'s cones (colourless,
+  range up to the lidar's datasheet range). Each scan predicts with the odometry since
+  the last scan, then:
+  - pairs detections with mapped cones by global nearest neighbour on the Mahalanobis
+    distance, inside a χ² gate and at most `max_innovation_m` (1 m) from where the
+    mapped cone should be. Without that limit, a short-range detector let a cone not yet
+    in the map pair with its neighbour at the loop closure, and the car jumped 3–5 m;
+  - runs one EKF update for all the pairs.
+
+  A new cone joins the map after 3 sightings taken from car positions at least 1 m
+  apart, if the sightings stayed tightly together. That keeps out returns that move with
+  the car. Publishes TF `map → odom`, `/localization/pose`, `/localization/landmarks`,
+  `/localization/landmark_points` (the map after every scan) and `/localization/status`.
+
+The simulator's true pose is TF `map → base_footprint_gt`. Only these read it:
+- **`localization_eval`** (falcon_evaluation): every 0.05 s it compares the stack's pose
+  and odometry alone against it. After the lap it writes `localization.json` / `.npz`
+  (`localization.py`):
+  - position, along-track, cross-track and heading error, as distributions over the lap
+    taken every 0.5 m driven;
+  - the final error;
+  - SLAM map quality: cones mapped, their error, false cones on and off the track;
+  - map building, from the map after every scan: how far along the track ahead the map
+    holds every cone within 0.25 m of where it is, as the car sees it (also at 0.1 and
+    0.5 m); how far ahead each cone was when it joined; the car-relative error of the
+    mapped cones up to 30 m ahead.
+- **the coverage counter**, so cones are still placed exactly.
+
 ## Topics
 
 | Topic | Type | |
@@ -361,10 +437,18 @@ If the car weaves, increase `lookahead_distance`; if it cuts corners, decrease i
 | `/falcon/cmd_auto`, `/falcon/cmd_teleop` → `/cmd` | AckermannDriveStamped | via `cmd_mux` |
 | `/falcon/control_source` | String | `auto`, `teleop` or `idle` |
 | `/ground_truth/state`, `/ground_truth/track` | eufs_msgs | simulator truth |
+| `/ros_can/wheel_speeds` | eufs_msgs/WheelSpeedsStamped | simulated ADS-DV CAN: four wheel rpm, steer angle (rad) |
+| `/imu/data` | sensor_msgs/Imu | simulated MTi-8 |
+| `/localization/odom`, `/localization/pose` | Odometry, PoseWithCovarianceStamped | odometry EKF; SLAM pose (map) |
+| `/localization/landmarks`, `/localization/status` | falcon_msgs/ConeArray, String (JSON) | SLAM cone map; per-scan stats |
+| `/localization/landmark_points` | sensor_msgs/PointCloud2 | SLAM cone map after each scan, at its stamp |
+| `/localization/eval/summary`, `/localization/eval/path_{true,est,dr}` | String, Path | live localisation error, paths for RViz |
 | `/coverage/summary`, `/coverage/markers` | String, MarkerArray | coverage metric |
 
-TF: `map → base_footprint` from the simulator (exact; EUFS's pose noise is zero), then
-the URDF (`base_footprint` is on the ground under the middle of the wheelbase).
+TF with `localization:=slam`: `map → odom` (cone SLAM) `→ base_footprint` (odometry EKF),
+then the URDF (`base_footprint` is on the ground under the middle of the wheelbase); the
+simulator's exact pose is `map → base_footprint_gt`. With `localization:=ground_truth`
+the simulator publishes `map → base_footprint` itself (exact; EUFS's pose noise is zero).
 
 ## Packages
 
@@ -372,13 +456,15 @@ the URDF (`base_footprint` is on the ground under the middle of the wheelbase).
 |---|---|---|
 | `falcon_bringup` | Python | `sim.launch.py` and the older launch files, RViz layout |
 | `falcon_description` | Python | vehicle and lidar profiles, URDF builder, `falcon_urdf` tool |
-| `falcon_evaluation` | Python | cone coverage metric, `lidar_sweep` |
+| `falcon_evaluation` | Python | cone coverage and localisation metrics, `lidar_sweep`, `lidar_stats` |
+| `falcon_localization` | Python | odometry EKF and cone EKF-SLAM |
+| `falcon_sim_sensors` | Python | simulated ADS-DV CAN (wheel speeds, steer angle) and MTi-8 IMU |
 | `falcon_cone_perception` | CMake/Python | YOLO + depth localiser, 3D/2D lidar cone detectors, fuser, lidar merger |
 | `falcon_cone_map_builder` | C++ | global cone map |
 | `falcon_planning` | Python | centreline planner + pure pursuit |
 | `falcon_teleop` | Python | keyboard teleop, `cmd_mux` |
 | `falcon_msgs` | C++ | Cone and ConeArray messages |
-| `falcon_common`, `falcon_localization`, `falcon_vehicle_comm`, `falcon_drivers` | | placeholders |
+| `falcon_common`, `falcon_vehicle_comm`, `falcon_drivers` | | placeholders |
 
 ## Troubleshooting
 
