@@ -7,7 +7,8 @@
 # EUFS, YOLO and Foxglove come prebuilt in the image.
 
 _falcon_pkgs="${*:-falcon_msgs falcon_common falcon_description falcon_planning falcon_teleop \
-falcon_cone_perception falcon_cone_map_builder falcon_evaluation falcon_bringup}"
+falcon_cone_perception falcon_cone_map_builder falcon_sim_sensors falcon_localization \
+falcon_evaluation falcon_bringup}"
 (
     cd /workspace/falcon_ws &&
     PYTHONNOUSERSITE=1 colcon build --merge-install --symlink-install \

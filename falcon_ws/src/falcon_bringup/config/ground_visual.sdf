@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!-- A visual-only ground for sim.launch.py ground:=true.  The EUFS ground_plane has
+     only a collision plane, and Gazebo's gpu_ray lidar and the cameras see visuals
+     only, so without this the lidar gets no ground returns.  No collision here: the
+     car still drives on the EUFS plane. -->
+<sdf version="1.6">
+  <model name="falcon_ground">
+    <static>true</static>
+    <link name="link">
+      <visual name="visual">
+        <cast_shadows>false</cast_shadows>
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>1000 1000</size>
+          </plane>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/DarkGrey</name>
+          </script>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fast DDS transports for the Falcon sim (sim.launch.py sets FASTRTPS_DEFAULT_PROFILES_FILE
+     to this file for every node it starts, Gazebo included).
+
+     A 32 MB shared-memory segment, so a dense lidar's PointCloud2 (the ATX's is 3 MB a frame)
+     goes through shared memory whole.  With the default 512 KB segment such samples went as
+     UDP fragments, a frame that lost one fragment was lost, and the ATX delivered between
+     0.6 and 8 of its 10 frames a second (measured on the RTX 5060 laptop, 2026-11-09); with
+     this file, 10.0.  UDP stays on for nodes started without the file. -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>falcon_shm</transport_id>
+      <type>SHM</type>
+      <segment_size>33554432</segment_size>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>falcon_udp</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="falcon_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>falcon_shm</transport_id>
+        <transport_id>falcon_udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

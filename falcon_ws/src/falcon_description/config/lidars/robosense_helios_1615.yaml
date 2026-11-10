@@ -7,5 +7,5 @@ rate_hz: 10
 horizontal: {fov_deg: 360, samples: 1800}
 vertical:
   uniform: {min_deg: -16.0, max_deg: 15.0, channels: 32}
-range: {min_m: 0.3, max_m: 100.0}
+range: {min_m: 0.3, max_m: 110.0}   # 110 m at 10% NIST, 150 m max (robosense.ai/rslidar/Helios)
 noise_stddev_m: 0.02

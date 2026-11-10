@@ -18,6 +18,7 @@
   <xacro:arg name="vehicle_model" default="DynamicBicycle"/>
   <xacro:arg name="command_mode" default="velocity"/>
   <xacro:arg name="publish_tf" default="true"/>
+  <xacro:arg name="truth_frame" default="base_footprint"/>
   <xacro:arg name="pub_ground_truth" default="true"/>
   <xacro:arg name="simulate_perception" default="true"/>
 
@@ -55,7 +56,6 @@
 
   <xacro:include filename="$(find eufs_racecar)/urdf/wheels.urdf.xacro"/>
   <xacro:include filename="$(find eufs_racecar)/urdf/eufs_base.urdf.xacro"/>
-  <xacro:include filename="$(find eufs_sensors)/urdf/imu.urdf.xacro"/>
   <xacro:include filename="$(find eufs_sensors)/urdf/gps.urdf.xacro"/>
   <xacro:include filename="$(find falcon_description)/urdf/falcon_plugins.gazebo.xacro"/>
   <xacro:include filename="$(find falcon_description)/urdf/camera.urdf.xacro"/>
@@ -64,9 +64,16 @@
   <!-- wheels.urdf.xacro places the wheel centres (chassis_width - 0.2) / 2 out -->
   <xacro:wheels chassis_width="${$(arg track) + 0.2}" wheelbase="$(arg wheelbase)"/>
 
-  <xacro:sensor_imu parent="chassis" prefix="imu" topic_prefix="">
+  <!-- IMU mount only: its readings (/imu/data, an MTi-8) come from falcon_sim_sensors,
+       made from the vehicle model's state.  Gazebo's own IMU sensor is not used: the
+       EUFS model moves the car kinematically, so Gazebo's physics accelerations are
+       not the car's. -->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="chassis"/>
+    <child link="imu_link"/>
     <origin xyz="$(arg imu_xyz)" rpy="0 0 0"/>
-  </xacro:sensor_imu>
+  </joint>
 
   <xacro:sensor_gps parent="chassis" prefix="gps">
     <origin xyz="$(arg gps_xyz)" rpy="0 0 0"/>

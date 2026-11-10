@@ -15,6 +15,7 @@ Outputs:
   /planning/path           (nav_msgs/Path, `path_frame`, map by default)
   /planning/cone_markers   (visualization_msgs/MarkerArray)
   /planning/lap_count      (std_msgs/Int32) — current completed lap count
+  /planning/finished       (std_msgs/Bool, latched) — true once `total_laps` are done
 
 The path is published in the map frame so that pure pursuit can move it into the
 car's frame at control time; a body-frame path is stale by however far the car drove
@@ -24,7 +25,9 @@ publishing in base_footprint.
 Lap counting: when the car enters then exits the zone within
 `orange_detect_radius_m` of an orange cone, the lap count goes up (the first exit,
 leaving the start line, is ignored).  After `total_laps` (0 = unlimited) the planner
-stops publishing paths and pure pursuit's path timeout stops the car.
+publishes /planning/finished and keeps planning, so pure pursuit brakes to a stop while
+still steering along the track (going silent instead would let the path timeout brake
+with the wheels straight, off the track if the finish is not on a straight).
 """
 
 import math
@@ -40,7 +43,8 @@ from falcon_msgs.msg import Cone, ConeArray
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Path
 from rclpy.node import Node
-from std_msgs.msg import Int32
+from rclpy.qos import DurabilityPolicy, QoSProfile
+from std_msgs.msg import Bool, Int32
 from visualization_msgs.msg import Marker, MarkerArray
 
 from falcon_planning import centerline
@@ -56,6 +60,7 @@ class PathPlannerNode(Node):
         self.declare_parameter('path_topic', '/planning/path')
         self.declare_parameter('markers_topic', '/planning/cone_markers')
         self.declare_parameter('lap_topic', '/planning/lap_count')
+        self.declare_parameter('finished_topic', '/planning/finished')
         self.declare_parameter('plan_rate_hz', 10.0)
         self.declare_parameter('total_laps', 0)
         self.declare_parameter('dedup_radius_m', 1.0)
@@ -103,6 +108,10 @@ class PathPlannerNode(Node):
         self._path_pub = self.create_publisher(Path, path_topic, 10)
         self._markers_pub = self.create_publisher(MarkerArray, markers_topic, 10)
         self._lap_pub = self.create_publisher(Int32, lap_topic, 10)
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._finished_pub = self.create_publisher(
+            Bool, self.get_parameter('finished_topic').value, latched)
+        self._finished_pub.publish(Bool(data=False))
 
         self.create_timer(1.0 / rate_hz, self._plan)
 
@@ -135,8 +144,6 @@ class PathPlannerNode(Node):
 
     def _plan(self):
         self._lap_pub.publish(Int32(data=self._lap_count))
-        if self._finished:
-            return
 
         tf_map_to_base = self._lookup(self._base_frame, self._map_frame)
         cones = self._merged_cones(tf_map_to_base)
@@ -149,9 +156,8 @@ class PathPlannerNode(Node):
         yellow = cones[color == Cone.COLOR_YELLOW, :2]
         orange = cones[(color == Cone.COLOR_ORANGE) | (color == Cone.COLOR_BIG_ORANGE), :2]
 
-        self._update_lap_count(orange)
-        if self._finished:
-            return
+        if not self._finished:
+            self._update_lap_count(orange)
 
         prev_body = None
         if self._prev_path_map is not None and tf_map_to_base is not None:
@@ -239,6 +245,7 @@ class PathPlannerNode(Node):
         if 0 < self._total_laps <= self._lap_count:
             self.get_logger().info(f'All {self._total_laps} laps done — stopping.')
             self._finished = True
+            self._finished_pub.publish(Bool(data=True))
 
     # ------------------------------------------------------------------ #
     # Message builders                                                     #

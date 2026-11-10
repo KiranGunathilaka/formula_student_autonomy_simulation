@@ -7,5 +7,5 @@ rate_hz: 10
 horizontal: {fov_deg: 360, samples: 2000}
 vertical:
   uniform: {min_deg: -16.0, max_deg: 15.0, channels: 32}
-range: {min_m: 0.3, max_m: 100.0}
+range: {min_m: 0.3, max_m: 80.0}   # 80 m at 10%, POD > 90%, 120 m max (hesaitech.com/product/xt32)
 noise_stddev_m: 0.02

@@ -10,6 +10,7 @@ pure_pursuit_node:
     min_speed: 1.0               # m/s, slowest the curvature limit goes
     max_lateral_accel: 3.0       # m/s^2 on the path ahead; 0 disables the curve limit
     path_timeout_sec: 0.5        # stop if no path within this (ROS / sim time)
+    stop_decel: 4.0              # m/s^2: braking along the path once the planner's laps are done
     control_rate_hz: 20.0
     # wheelbase and max_steering_angle come from the vehicle profile when launched
     # from falcon_bringup/sim.launch.py; these are the ADS-DV values.

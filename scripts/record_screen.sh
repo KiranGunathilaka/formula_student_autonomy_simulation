@@ -27,6 +27,8 @@ else
 fi
 
 echo "Recording ${DISP} (${SIZE}, ${FPS} fps) to ${OUT}; press q or Ctrl-C to stop."
-ffmpeg -hide_banner -loglevel warning -f x11grab -framerate "${FPS}" -video_size "${SIZE}" \
+# -y: a re-run replaces its video (lidar_stats_gazebo.sh re-records a lidar into the same
+# file; without it ffmpeg asks, gets no answer, and records nothing).
+ffmpeg -hide_banner -loglevel warning -y -f x11grab -framerate "${FPS}" -video_size "${SIZE}" \
     -i "${DISP}" "${ENC[@]}" -pix_fmt yuv420p "${OUT}"
 echo "Saved ${OUT}"

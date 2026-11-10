@@ -291,8 +291,8 @@ def _circumcircle(verts, t):
     return (centre, float(np.sum((centre - verts[t[0]]) ** 2)))
 
 
-def _orange_sides(orange, left, right):
-    """Give each orange cone the side of its nearest blue/yellow cone (+1/-1)."""
+def _orange_sides(orange, left, right, p):
+    """Give each orange cone a side (+1 left / -1 right) from the blue/yellow cones."""
     if len(orange) == 0:
         return np.zeros(0)
     ref = [a for a in (left, right) if len(a)]
@@ -302,7 +302,21 @@ def _orange_sides(orange, left, right):
            if len(left) else np.full(len(orange), np.inf))
     d_r = (np.min(np.hypot(*(orange[:, None, :] - right[None, :, :]).transpose(2, 0, 1)), axis=1)
            if len(right) else np.full(len(orange), np.inf))
-    return np.where(d_l <= d_r, 1.0, -1.0)
+    sides = np.where(d_l <= d_r, 1.0, -1.0)
+    if not (len(left) and len(right)):
+        return sides
+    # With cones 5 m apart on a 3 m track the cone straight across can be nearer than the
+    # next one on the same side, so the nearest cone alone can put an orange on the wrong
+    # side.  Start and finish lines have an orange on each edge: split each orange and its
+    # partner across the track whichever way is nearer overall, so the along-track offset
+    # counts the same for both.
+    d_o = np.hypot(*(orange[:, None, :] - orange[None, :, :]).transpose(2, 0, 1))
+    across = (d_o >= p['min_track_width_m']) & (d_o <= p['max_track_width_m'])
+    for i in range(len(orange)):
+        if across[i].any():
+            j = int(np.argmin(np.where(across[i], d_o[i], np.inf)))
+            sides[i] = 1.0 if d_l[i] + d_r[j] <= d_r[i] + d_l[j] else -1.0
+    return sides
 
 
 def delaunay_walk(pts, side, p, prev_path=None):
@@ -479,7 +493,7 @@ def plan_centerline(blue, yellow, params=None, orange=None, prev_path=None):
     orange = _window(np.asarray(orange if orange is not None else [], dtype=float)
                      .reshape(-1, 2), p)
 
-    o_side = _orange_sides(orange, blue, yellow)
+    o_side = _orange_sides(orange, blue, yellow, p)
     left_pts = np.vstack([blue, orange[o_side > 0]]) if len(orange) else blue
     right_pts = np.vstack([yellow, orange[o_side < 0]]) if len(orange) else yellow
 

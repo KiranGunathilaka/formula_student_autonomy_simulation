@@ -8,5 +8,5 @@ rate_hz: 10
 horizontal: {fov_deg: 360, samples: 2048}
 vertical:
   uniform: {min_deg: -21.2, max_deg: 21.2, channels: 32}
-range: {min_m: 0.3, max_m: 100.0}
+range: {min_m: 0.3, max_m: 90.0}   # 90 m at 10% Lambertian, > 90% detection (Ouster OS1 Rev7 datasheet)
 noise_stddev_m: 0.02

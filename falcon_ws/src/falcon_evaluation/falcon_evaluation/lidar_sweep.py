@@ -68,6 +68,7 @@ def expand_runs(spec):
 def launch_cmd(args, run_dir_parent, name):
     fixed = {
         'mode': 'autonomy', 'cones': 'sim', 'use_camera': 'false', 'use_lidar': 'false',
+        'localization': 'ground_truth',     # coverage sweeps judge the lidar, not the pose
         'gazebo_gui': 'false', 'rviz': 'false',
         'coverage': 'true', 'coverage_exit_on_finish': 'true',
         'coverage_output_dir': run_dir_parent, 'coverage_run_name': name,

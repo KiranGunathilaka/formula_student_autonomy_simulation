@@ -50,6 +50,19 @@ def test_one_side_only_offsets_by_half_track():
     assert len(mid) and np.allclose(mid[:, 1], 1.5 - 1.5, atol=0.2)
 
 
+def test_orange_line_on_sparse_cones_keeps_its_sides():
+    # Worst legal cones: 5 m apart on a 3 m track, the yellows staggered 2.5 m from the
+    # blues.  The orange line replaces the blue at x = 10, so that orange's nearest cone
+    # is the yellow across the track, not a blue.  Each orange must still keep its side.
+    blue = np.array([(x, 1.5) for x in (0.0, 5.0, 15.0, 20.0, 25.0)])
+    yellow = np.array([(x, -1.5) for x in (2.5, 7.5, 12.5, 17.5, 22.5)])
+    orange = np.array([(10.0, 1.5), (10.4, 1.5), (10.0, -1.5), (10.4, -1.5)])
+    sides = centerline._orange_sides(orange, blue, yellow, centerline.DEFAULTS)
+    assert list(sides) == [1, 1, -1, -1]
+    path, _, _ = centerline.plan_centerline(blue, yellow, orange=orange)
+    assert path[-1, 0] > 20 and np.max(np.abs(path[:, 1])) < 0.3
+
+
 def test_lookahead_on_path_and_steering_sign():
     path = np.stack([np.linspace(0, 10, 21), np.linspace(0, 2, 21)], 1)
     lx, ly = pursuit.lookahead_point(path, 3.0)
